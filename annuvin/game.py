@@ -386,184 +386,182 @@ class AnnuvinGame:
 
 
 # ─── AI placeholder ────────────────────────────────────────────────────────────
-#
+
 # The AI module will be implemented in a later phase of the project.
 # The stubs below define the interface so that the rest of the code can
 # reference them without breaking.
-#
-# class AnnuvinAI:
-#     """Base class for computer players."""
-#
-#     def __init__(self, player: int, skill: str = "medium") -> None:
-#         self.player = player
-#         self.skill  = skill   # "easy" | "medium" | "hard"
-#
-#     def choose_move(self, game: AnnuvinGame) -> Move:
-#         raise NotImplementedError
-#
-#
-# class MinimaxAI(AnnuvinAI):
-#     """
-#     Minimax with alpha-beta pruning.
-#
-#     Parameters
-#     ----------
-#     depth : int
-#         Search depth (higher = stronger but slower).
-#         easy   → depth 1
-#         medium → depth 3
-#         hard   → depth 5
-#     """
-#
-#     DEPTH_MAP = {"easy": 1, "medium": 3, "hard": 5}
-#
-#     def __init__(self, player: int, skill: str = "medium") -> None:
-#         super().__init__(player, skill)
-#         self.depth = self.DEPTH_MAP.get(skill, 3)
-#
-#     def choose_move(self, game: AnnuvinGame) -> Move:
-#         best_move = None
-#         best_score = float("-inf")
-#         alpha, beta = float("-inf"), float("inf")
-#         for move in game.legal_moves(self.player):
-#             child = game.clone()
-#             child.apply_move(move)
-#             score = self._minimax(child, self.depth - 1, alpha, beta, False)
-#             if score > best_score:
-#                 best_score = score
-#                 best_move = move
-#             alpha = max(alpha, best_score)
-#         return best_move
-#
-#     def _minimax(self, game: AnnuvinGame, depth: int,
-#                  alpha: float, beta: float, maximising: bool) -> float:
-#         if game.game_over or depth == 0:
-#             return self._evaluate(game)
-#         moves = game.legal_moves()
-#         if maximising:
-#             value = float("-inf")
-#             for move in moves:
-#                 child = game.clone()
-#                 child.apply_move(move)
-#                 value = max(value, self._minimax(child, depth-1, alpha, beta, False))
-#                 alpha = max(alpha, value)
-#                 if beta <= alpha:
-#                     break  # β cut-off
-#             return value
-#         else:
-#             value = float("inf")
-#             for move in moves:
-#                 child = game.clone()
-#                 child.apply_move(move)
-#                 value = min(value, self._minimax(child, depth-1, alpha, beta, True))
-#                 beta = min(beta, value)
-#                 if beta <= alpha:
-#                     break  # α cut-off
-#             return value
-#
-#     def _evaluate(self, game: AnnuvinGame) -> float:
-#         """
-#         Heuristic evaluation function.
-#         Positive values favour self.player, negative favour opponent.
-#         """
-#         opp = 2 if self.player == 1 else 1
-#         if game.winner == self.player:
-#             return 10_000.0
-#         if game.winner == opp:
-#             return -10_000.0
-#         if game.winner == 0:
-#             return 0.0
-#         # Material score: each of our pieces = +10, each opponent piece = -10
-#         score  =  10 * game.piece_count(self.player)
-#         score -= 10 * game.piece_count(opp)
-#         # Mobility score: more moves available = better
-#         score += 0.5 * len(game.legal_moves(self.player))
-#         score -= 0.5 * len(game.legal_moves(opp))
-#         return score
-#
-#
-# class MCTSNode:
-#     """Node in the Monte Carlo Tree Search tree."""
-#
-#     def __init__(self, game: AnnuvinGame, parent: Optional["MCTSNode"] = None,
-#                  move: Optional[Move] = None) -> None:
-#         self.game     = game
-#         self.parent   = parent
-#         self.move     = move
-#         self.children: List["MCTSNode"] = []
-#         self.wins     = 0.0
-#         self.visits   = 0
-#         self.untried_moves: List[Move] = game.legal_moves()
-#
-#     @property
-#     def ucb1(self) -> float:
-#         import math
-#         if self.visits == 0:
-#             return float("inf")
-#         return (self.wins / self.visits +
-#                 1.41 * math.sqrt(math.log(self.parent.visits) / self.visits))
-#
-#
-# class MCTSAI(AnnuvinAI):
-#     """
-#     Monte Carlo Tree Search player.
-#
-#     Parameters
-#     ----------
-#     iterations : int
-#         Number of simulation iterations per move.
-#         easy   → 200
-#         medium → 1000
-#         hard   → 5000
-#     """
-#
-#     ITER_MAP = {"easy": 200, "medium": 1000, "hard": 5000}
-#
-#     def __init__(self, player: int, skill: str = "medium") -> None:
-#         super().__init__(player, skill)
-#         self.iterations = self.ITER_MAP.get(skill, 1000)
-#
-#     def choose_move(self, game: AnnuvinGame) -> Move:
-#         import random
-#         root = MCTSNode(game.clone())
-#         for _ in range(self.iterations):
-#             node = self._select(root)
-#             result = self._simulate(node.game.clone())
-#             self._backpropagate(node, result)
-#         best = max(root.children, key=lambda n: n.visits)
-#         return best.move
-#
-#     def _select(self, node: "MCTSNode") -> "MCTSNode":
-#         while not node.game.game_over:
-#             if node.untried_moves:
-#                 return self._expand(node)
-#             node = max(node.children, key=lambda n: n.ucb1)
-#         return node
-#
-#     def _expand(self, node: "MCTSNode") -> "MCTSNode":
-#         import random
-#         move = node.untried_moves.pop(random.randrange(len(node.untried_moves)))
-#         child_game = node.game.clone()
-#         child_game.apply_move(move)
-#         child = MCTSNode(child_game, parent=node, move=move)
-#         node.children.append(child)
-#         return child
-#
-#     def _simulate(self, game: AnnuvinGame) -> int:
-#         """Random rollout; returns winner (0=draw, 1 or 2)."""
-#         import random
-#         while not game.game_over:
-#             moves = game.legal_moves()
-#             if not moves:
-#                 break
-#             game.apply_move(random.choice(moves))
-#         return game.winner or 0
-#
-#     def _backpropagate(self, node: "MCTSNode", result: int) -> None:
-#         while node is not None:
-#             node.visits += 1
-#             if result == self.player:
-#                 node.wins += 1.0
-#             elif result == 0:
-#                 node.wins += 0.5
-#             node = node.parent
+
+class AnnuvinAI:
+    """Base class for computer players."""
+
+    def __init__(self, player: int, skill: str = "medium") -> None:
+        self.player = player
+        self.skill  = skill   # "easy" | "medium" | "hard"
+
+    def choose_move(self, game: AnnuvinGame) -> Move:
+        raise NotImplementedError
+
+class MinimaxAI(AnnuvinAI):
+    """
+    Minimax with alpha-beta pruning.
+
+    Parameters
+    ----------
+    depth : int
+        Search depth (higher = stronger but slower).
+        easy   → depth 1
+        medium → depth 3
+        hard   → depth 5
+    """
+
+    DEPTH_MAP = {"easy": 1, "medium": 3, "hard": 5}
+
+    def __init__(self, player: int, skill: str = "medium") -> None:
+        super().__init__(player, skill)
+        self.depth = self.DEPTH_MAP.get(skill, 3)
+
+    def choose_move(self, game: AnnuvinGame) -> Move:
+        best_move = None
+        best_score = float("-inf")
+        alpha, beta = float("-inf"), float("inf")
+        for move in game.legal_moves(self.player):
+            child = game.clone()
+            child.apply_move(move)
+            score = self._minimax(child, self.depth - 1, alpha, beta, False)
+            if score > best_score:
+                best_score = score
+                best_move = move
+            alpha = max(alpha, best_score)
+        return best_move
+
+    def _minimax(self, game: AnnuvinGame, depth: int,
+                 alpha: float, beta: float, maximising: bool) -> float:
+        if game.game_over or depth == 0:
+            return self._evaluate(game)
+        moves = game.legal_moves()
+        if maximising:
+            value = float("-inf")
+            for move in moves:
+                child = game.clone()
+                child.apply_move(move)
+                value = max(value, self._minimax(child, depth-1, alpha, beta, False))
+                alpha = max(alpha, value)
+                if beta <= alpha:
+                    break  # β cut-off
+            return value
+        else:
+            value = float("inf")
+            for move in moves:
+                child = game.clone()
+                child.apply_move(move)
+                value = min(value, self._minimax(child, depth-1, alpha, beta, True))
+                beta = min(beta, value)
+                if beta <= alpha:
+                    break  # α cut-off
+            return value
+
+    def _evaluate(self, game: AnnuvinGame) -> float:
+        """
+        Heuristic evaluation function.
+        Positive values favour self.player, negative favour opponent.
+        """
+        opp = 2 if self.player == 1 else 1
+        if game.winner == self.player:
+            return 10_000.0
+        if game.winner == opp:
+            return -10_000.0
+        if game.winner == 0:
+            return 0.0
+        # Material score: each of our pieces = +10, each opponent piece = -10
+        score  =  10 * game.piece_count(self.player)
+        score -= 10 * game.piece_count(opp)
+        # Mobility score: more moves available = better
+        score += 0.5 * len(game.legal_moves(self.player))
+        score -= 0.5 * len(game.legal_moves(opp))
+        return score
+
+
+class MCTSNode:
+    """Node in the Monte Carlo Tree Search tree."""
+
+    def __init__(self, game: AnnuvinGame, parent: Optional["MCTSNode"] = None,
+                 move: Optional[Move] = None) -> None:
+        self.game     = game
+        self.parent   = parent
+        self.move     = move
+        self.children: List["MCTSNode"] = []
+        self.wins     = 0.0
+        self.visits   = 0
+        self.untried_moves: List[Move] = game.legal_moves()
+
+    @property
+    def ucb1(self) -> float:
+        import math
+        if self.visits == 0:
+            return float("inf")
+        return (self.wins / self.visits +
+                1.41 * math.sqrt(math.log(self.parent.visits) / self.visits))
+
+class MCTSAI(AnnuvinAI):
+    """
+    Monte Carlo Tree Search player.
+
+    Parameters
+    ----------
+    iterations : int
+        Number of simulation iterations per move.
+        easy   → 200
+        medium → 1000
+        hard   → 5000
+    """
+
+    ITER_MAP = {"easy": 200, "medium": 1000, "hard": 5000}
+
+    def __init__(self, player: int, skill: str = "medium") -> None:
+        super().__init__(player, skill)
+        self.iterations = self.ITER_MAP.get(skill, 1000)
+
+    def choose_move(self, game: AnnuvinGame) -> Move:
+        import random
+        root = MCTSNode(game.clone())
+        for _ in range(self.iterations):
+            node = self._select(root)
+            result = self._simulate(node.game.clone())
+            self._backpropagate(node, result)
+        best = max(root.children, key=lambda n: n.visits)
+        return best.move
+
+    def _select(self, node: "MCTSNode") -> "MCTSNode":
+        while not node.game.game_over:
+            if node.untried_moves:
+                return self._expand(node)
+            node = max(node.children, key=lambda n: n.ucb1)
+        return node
+
+    def _expand(self, node: "MCTSNode") -> "MCTSNode":
+        import random
+        move = node.untried_moves.pop(random.randrange(len(node.untried_moves)))
+        child_game = node.game.clone()
+        child_game.apply_move(move)
+        child = MCTSNode(child_game, parent=node, move=move)
+        node.children.append(child)
+        return child
+
+    def _simulate(self, game: AnnuvinGame) -> int:
+        """Random rollout; returns winner (0=draw, 1 or 2)."""
+        import random
+        while not game.game_over:
+            moves = game.legal_moves()
+            if not moves:
+                break
+            game.apply_move(random.choice(moves))
+        return game.winner or 0
+
+    def _backpropagate(self, node: "MCTSNode", result: int) -> None:
+        while node is not None:
+            node.visits += 1
+            if result == self.player:
+                node.wins += 1.0
+            elif result == 0:
+                node.wins += 0.5
+            node = node.parent

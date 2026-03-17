@@ -68,6 +68,7 @@ class AnnuvinApp:
         self.screen  = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         self.clock   = pygame.time.Clock()
         self.running = True
+        self._ai: Optional[object] = None  
 
         # Game state
         self._state: AppState       = AppState.MAIN_MENU
@@ -94,6 +95,7 @@ class AnnuvinApp:
     def _init_main_menu(self) -> None:
         m = MainMenu(self.screen)
         m.on_human_vs_human = self._go_to_player_names
+        m.on_human_vs_ai    = self._go_to_ai_skill_select
         m.on_rules          = self._go_to_rules
         m.on_load_game      = self._go_to_load_dialog
         m.on_quit           = self._quit
@@ -149,13 +151,37 @@ class AnnuvinApp:
     def _quit(self) -> None:
         self.running = False
 
+    def _go_to_ai_skill_select(self) -> None:
+        # For now, just launch with medium difficulty
+        # You can add a proper skill screen later
+        self._start_hvai_game("Player 1", "medium")
+
+    def _start_hvai_game(self, name1: str, skill: str) -> None:
+        from annuvin.game import MinimaxAI
+        self._player_names = {1: name1, 2: f"AI ({skill})"}
+        self._mode = GameMode.HUMAN_VS_AI
+        self._game = AnnuvinGame()
+        self._ai = MinimaxAI(player=2, skill=skill)
+        self._setup_renderer()
+        self._state = AppState.PLAYING
+
     # ── Game actions ──────────────────────────────────────────────────────────
 
     def _apply_human_move(self, move) -> None:
-        """Called by the renderer when the human player completes a move selection."""
         if self._game and not self._game.game_over:
             self._game.apply_move(move)
+            # If it's now the AI's turn, trigger it
+            if (self._mode == GameMode.HUMAN_VS_AI
+                    and self._ai
+                    and not self._game.game_over
+                    and self._game.current_player == 2):
+                self._do_ai_move()
 
+    def _do_ai_move(self) -> None:
+        if self._game and self._ai:
+            move = self._ai.choose_move(self._game)
+            if move:
+                self._game.apply_move(move)
     # ── Save / Load ───────────────────────────────────────────────────────────
 
     def _save_game_to_file(self, filepath: str) -> None:

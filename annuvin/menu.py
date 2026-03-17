@@ -114,7 +114,7 @@ class MainMenu:
 
         step = self._BTN_H + self._GAP
         self.btn_hvh   = mk("Human vs Human",          enabled=True,  y_offset=0 * step)
-        self.btn_hvai  = mk("Human vs AI  (coming…)",  enabled=False, y_offset=1 * step)
+        self.btn_hvai  = mk("Human vs AI (in development...)",  enabled=True, y_offset=1 * step)
         self.btn_aiai  = mk("AI vs AI  (coming…)",     enabled=False, y_offset=2 * step)
         self.btn_rules = mk("Rules",                   enabled=True,  y_offset=3 * step + 12)
         self.btn_load  = mk("Load Game",               enabled=True,  y_offset=4 * step + 12)
@@ -141,7 +141,9 @@ class MainMenu:
 
         if self.btn_hvh.handle_event(event) and self.on_human_vs_human:
             self.on_human_vs_human()
-        if self.btn_rules.handle_event(event) and self.on_rules:
+        if self.btn_hvai.handle_event(event) and self.on_human_vs_ai:  # ← ADD THIS
+            self.on_human_vs_ai()
+        if self.btn_rules.handle_event(event) and self.on_rules:   # ← ADD BEFORE THIS
             self.on_rules()
         if self.btn_load.handle_event(event) and self.on_load_game:
             self.on_load_game()
@@ -194,7 +196,7 @@ class MainMenu:
     def _draw_disabled_labels(self) -> None:
         """Small 'AI features will be available in a later phase' note."""
         note_font = pygame.font.SysFont("segoeui", 12)
-        for btn in [self.btn_hvai, self.btn_aiai]:
+        for btn in [self.btn_aiai]:
             note = note_font.render(
                 "AI opponents — Phase 2", True, DIM_TEXT_COLOR)
             nr = note.get_rect()
@@ -248,6 +250,8 @@ class PlayerNameScreen:
             pygame.Rect(cx - self._box_w // 2, 250, self._box_w, 46),
             pygame.Rect(cx - self._box_w // 2, 340, self._box_w, 46),
         ]
+
+        self.on_human_vs_ai: Optional[Callable] = None
 
     def handle_event(self, event: pygame.event.Event) -> None:
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
