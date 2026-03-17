@@ -18,32 +18,27 @@ Movement allowance (steps per turn = 7 − number_of_your_remaining_pieces):
 
 A "step" is moving to an immediately adjacent hex cell (one of 6 directions).
 Within a single turn a stone may change direction freely across its allotted
-steps (it may also "pass through" cells occupied by own pieces, but cannot
-*end* a step on them or on empty cells after the allowance is exhausted).
+steps (it may also NOT pass through cells occupied by own pieces).
 
 Captures:
   • Moving onto a cell occupied by an opponent captures that piece.
-  • After a capture the moving stone may continue spending its remaining steps,
-    and may make further captures.
-  • A stone CANNOT move through a captured piece's position AFTER the capture
-    (the cell is now empty, so it is fine to traverse).
-  • A stone CAN stop on an enemy cell (capture) before spending all steps — the
-    remaining steps are simply forfeited.
-  • A stone CANNOT voluntarily stop mid-move on an empty cell (you must use all
-    remaining steps OR stop on a capture).
+  • After a capture the moving stone MAY stop early (forfeit remaining steps)
+    OR continue spending its remaining steps for further captures.
+  • A stone CANNOT end its turn on a cell occupied by one of its own pieces.
+  • A stone CANNOT voluntarily stop mid-move on an empty cell — it MUST use
+    ALL remaining steps unless it just captured.
 
 Special rule — mandatory use of all steps:
-  The player MUST move a stone using ALL of its allotted steps, unless the only
-  way to move would be to capture one of their OWN pieces, in which case the
-  stone stops early.
+  The player MUST move a stone using ALL of its allotted steps unless:
+    (a) The stone just made a capture (may stop after capture), OR
+    (b) All further movement would be completely blocked.
 
 Win conditions:
   1. A player captures every opponent piece.
   2. A player reduces the opponent to exactly 1 stone while still having all 6
      of their own pieces intact.
 
-Draw: Not explicitly defined in the original rules; we add a 150-move limit to
-avoid infinite games (each player move counts as one move).
+Draw: 150-move limit to avoid infinite games.
 """
 
 from __future__ import annotations
@@ -63,7 +58,7 @@ DRAW_MOVE_LIMIT = 150   # half-moves before automatic draw
 class Move:
     """A complete move: a piece at *origin* following a sequence of *path* cells."""
     origin: Cube
-    path: List[Cube]          # list of cells visited in order (length == steps)
+    path: List[Cube]          # list of cells visited in order (length == steps used)
     captures: List[Cube]      # cells where enemy pieces are taken
 
     @property
@@ -79,16 +74,6 @@ class Move:
 class AnnuvinGame:
     """
     Holds the mutable game state and enforces all rules.
-
-    Attributes
-    ----------
-    board         : HexBoard  — immutable grid topology
-    pieces        : dict[player_id → set of cube positions]
-    current_player: 1 or 2
-    move_count    : number of half-moves played so far
-    history       : list of (player, Move) played
-    winner        : None | 1 | 2 | 0 (0 = draw)
-    game_over     : bool
     """
 
     def __init__(self, board: Optional[HexBoard] = None) -> None:
@@ -101,7 +86,7 @@ class AnnuvinGame:
         self.current_player: int = 1
         self.move_count: int = 0
         self.history: List[Tuple[int, Move]] = []
-        self.winner: Optional[int] = None   # None=ongoing, 0=draw, 1 or 2=winner
+        self.winner: Optional[int] = None
         self.game_over: bool = False
         self.last_move: Optional[Move] = None
 
@@ -130,10 +115,15 @@ class AnnuvinGame:
         moves: List[Move] = []
         for origin in list(self.pieces[player]):
             self._expand_paths(
-                player, origin, origin, steps,
-                current_path=[], captures_so_far=[],
+                player=player,
+                origin=origin,
+                current=origin,
+                steps_left=steps,
+                current_path=[],
+                captures_so_far=[],
+                live_opp=frozenset(self.pieces[self.opponent(player)]),
                 own_pieces=frozenset(self.pieces[player]),
-                opp_pieces=frozenset(self.pieces[self.opponent(player)]),
+                just_captured=False,
                 results=moves,
             )
         return moves
@@ -146,80 +136,96 @@ class AnnuvinGame:
         steps_left: int,
         current_path: List[Cube],
         captures_so_far: List[Cube],
+        live_opp: FrozenSet[Cube],      # enemy pieces still alive on this path
         own_pieces: FrozenSet[Cube],
-        opp_pieces: FrozenSet[Cube],
+        just_captured: bool,            # did the LAST step make a capture?
         results: List[Move],
     ) -> None:
         """
-        Recursive DFS to build all valid paths for a stone starting at *origin*.
+        Recursive DFS to build all valid complete paths for a stone.
 
-        A path is valid (and added to *results*) when:
-          • All steps_left steps have been used (end of allowance), OR
-          • The last step was a capture and there are remaining steps
-            (the player may CHOOSE to stop after a capture).
+        STOPPING RULES (both must be satisfied to record a move):
+          1. steps_left == 0  (used all allowance), OR
+          2. just_captured == True AND steps_left > 0
+             (player MAY choose to stop after a capture)
 
-        Stopping on an empty cell before exhausting steps is NOT allowed.
+        Stopping on an EMPTY cell before exhausting steps is NEVER allowed.
         """
-        # Track which enemy pieces are still alive for this path
-        # (pieces captured earlier in this path are gone from opp set)
-        live_opp = frozenset(c for c in opp_pieces if c not in captures_so_far)
-        live_opp_mutable = set(live_opp)  # needed for re-passing through captured spots
+
+        # ── Can we stop here? ────────────────────────────────────────────────
+        if current_path:   # must have moved at least once
+            if steps_left == 0:
+                # Used all steps — this is a valid terminal position
+                # (we're guaranteed not to be on own piece because we
+                #  block own-piece steps in the expansion below)
+                results.append(Move(
+                    origin=origin,
+                    path=list(current_path),
+                    captures=list(captures_so_far),
+                ))
+                return   # cannot continue — no steps left
+
+            if just_captured:
+                # After a capture the player MAY stop early
+                results.append(Move(
+                    origin=origin,
+                    path=list(current_path),
+                    captures=list(captures_so_far),
+                ))
+                # … but also fall through to explore further steps
 
         if steps_left == 0:
-            # Must end the move here — record if destination is valid
-            # (cannot end on own piece; capture already handled when stepping in)
-            if current not in own_pieces or current == origin:
-                results.append(Move(
-                    origin=origin,
-                    path=list(current_path),
-                    captures=list(captures_so_far),
-                ))
+            # No path recorded yet (origin == current, shouldn't happen normally)
             return
 
-        # After a capture: player may CHOOSE to stop here (early termination)
-        if captures_so_far and current_path:
-            last = current_path[-1]
-            if last in captures_so_far:
-                # Stopping here is allowed (destination is the capture cell)
-                results.append(Move(
-                    origin=origin,
-                    path=list(current_path),
-                    captures=list(captures_so_far),
-                ))
-                # … but also continue exploring further steps (fall through)
-
-        # Try all 6 neighbours
+        # ── Explore next steps ───────────────────────────────────────────────
+        moved_anywhere = False
         for direction in CUBE_DIRECTIONS:
             nxt = _cube_add(current, direction)
+
+            # Must stay on board
             if not self.board.is_valid(nxt):
                 continue
 
+            # Cannot move onto / through own pieces
+            # (own pieces block movement completely in Annuvin)
             if nxt in own_pieces and nxt != origin:
-                # Cannot step onto (or through and stop on) own piece.
-                # In Annuvin pieces may NOT pass through their own pieces;
-                # the movement is blocked.
                 continue
 
+            moved_anywhere = True
+
+            # Determine if this step is a capture
+            is_capture = nxt in live_opp
             new_captures = list(captures_so_far)
-            new_opp = set(live_opp_mutable)
+            new_live_opp = live_opp
 
-            if nxt in new_opp:
-                # Capture: remove from live opponents for rest of this path
+            if is_capture:
                 new_captures.append(nxt)
-                new_opp.discard(nxt)
+                new_live_opp = frozenset(c for c in live_opp if c != nxt)
 
-            new_path = current_path + [nxt]
             self._expand_paths(
                 player=player,
                 origin=origin,
                 current=nxt,
                 steps_left=steps_left - 1,
-                current_path=new_path,
+                current_path=current_path + [nxt],
                 captures_so_far=new_captures,
+                live_opp=new_live_opp,
                 own_pieces=own_pieces,
-                opp_pieces=frozenset(new_opp),
+                just_captured=is_capture,
                 results=results,
             )
+
+        # ── Forced stop: completely blocked ──────────────────────────────────
+        # If we haven't moved at all AND we have a path (we're mid-move),
+        # then the stone is stuck — record whatever we have as a valid
+        # (forced) terminal position, even with steps remaining.
+        if not moved_anywhere and current_path:
+            results.append(Move(
+                origin=origin,
+                path=list(current_path),
+                captures=list(captures_so_far),
+            ))
 
     # ── Move application ──────────────────────────────────────────────────────
 
@@ -266,14 +272,13 @@ class AnnuvinGame:
 
         # Draw: move limit reached
         if self.move_count >= DRAW_MOVE_LIMIT:
-            self.winner = 0   # draw
+            self.winner = 0
             self.game_over = True
             return
 
-        # No legal moves for next player (shouldn't normally happen, but safeguard)
+        # No legal moves for next player (completely blocked)
         next_player = self.opponent(self.current_player)
         if not self.legal_moves(next_player):
-            # The player with no moves loses
             self.winner = self.current_player
             self.game_over = True
 
@@ -292,11 +297,11 @@ class AnnuvinGame:
     def clone(self) -> "AnnuvinGame":
         """Return a deep copy of this game state (useful for AI search)."""
         new = AnnuvinGame.__new__(AnnuvinGame)
-        new.board = self.board             # board is immutable, safe to share
+        new.board = self.board
         new.pieces = {k: set(v) for k, v in self.pieces.items()}
         new.current_player = self.current_player
         new.move_count = self.move_count
-        new.history = list(self.history)   # shallow copy of history tuples
+        new.history = list(self.history)
         new.winner = self.winner
         new.game_over = self.game_over
         new.last_move = self.last_move
@@ -305,15 +310,6 @@ class AnnuvinGame:
     # ── Serialisation ─────────────────────────────────────────────────────────
 
     def to_text(self) -> str:
-        """
-        Serialise the current board state to a human-readable text format.
-
-        Format:
-            MOVE <n>
-            PLAYER <current>
-            P1 <q1,r1,s1> <q2,r2,s2> ...
-            P2 <q1,r1,s1> ...
-        """
         p1 = " ".join(f"{q},{r},{s}" for q, r, s in sorted(self.pieces[1]))
         p2 = " ".join(f"{q},{r},{s}" for q, r, s in sorted(self.pieces[2]))
         return (
@@ -325,10 +321,6 @@ class AnnuvinGame:
 
     @classmethod
     def from_text(cls, text: str) -> "AnnuvinGame":
-        """
-        Load a game state from the text format produced by *to_text()*.
-        Raises ValueError on malformed input.
-        """
         game = cls.__new__(cls)
         game.board = HexBoard(size=4)
         game.history = []
@@ -365,10 +357,7 @@ class AnnuvinGame:
 
         return game
 
-    # ── History export ────────────────────────────────────────────────────────
-
     def history_to_text(self) -> str:
-        """Return a text log of all moves played so far."""
         lines = ["Annuvin — Game History", "=" * 40]
         for i, (player, move) in enumerate(self.history, 1):
             caps = ", ".join(str(c) for c in move.captures) or "none"

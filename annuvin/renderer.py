@@ -1,22 +1,23 @@
 """
 renderer.py — Pygame rendering of the Annuvin board and game state.
 
-Responsibilities:
-• Draw the hex grid with flat-top hexagons.
-• Draw player pieces as circles inside hexes.
-• Highlight the selected piece, its valid destinations, and the last move made.
-• Show a sidebar with current turn, piece counts, and action buttons.
-• Handle mouse → cell coordinate mapping.
+MULTI-STEP TURN MODEL
+─────────────────────
+Each click advances ONE step. The turn only ends and passes to the opponent when:
+  (a) All required steps are exhausted (steps_remaining == 0), OR
+  (b) The player clicks "Stop here" after a capture (optional early stop).
+
+Clicking a different own piece mid-turn cancels and restarts with that piece.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, FrozenSet
 
 import pygame
 
-from annuvin.board import Cube, HexBoard
+from annuvin.board import Cube, HexBoard, _cube_add, CUBE_DIRECTIONS
 from annuvin.constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT, HEX_RADIUS,
     BG_COLOR, PANEL_COLOR, BORDER_COLOR,
@@ -33,14 +34,19 @@ from annuvin.game import AnnuvinGame, Move
 # ─── Geometry helpers ─────────────────────────────────────────────────────────
 
 def _hex_corners(cx: float, cy: float, r: float) -> List[Tuple[float, float]]:
-    """Return the 6 corner pixel positions of a flat-top hexagon."""
     corners = []
     for i in range(6):
-        angle_deg = 60 * i           # flat-top: starts at 0°
-        angle_rad = math.radians(angle_deg)
+        angle_rad = math.radians(60 * i)
         corners.append((cx + r * math.cos(angle_rad),
                          cy + r * math.sin(angle_rad)))
     return corners
+
+
+def _pixel_in_hex(px: float, py: float, cx: float, cy: float, r: float) -> bool:
+    x, y = px - cx, py - cy
+    fq = (2 / 3 * x) / r
+    fr = (-1 / 3 * x + math.sqrt(3) / 3 * y) / r
+    return max(abs(fq), abs(fr), abs(-fq - fr)) <= 1.0
 
 
 # ─── Button ───────────────────────────────────────────────────────────────────
@@ -58,7 +64,6 @@ class Button:
         self._hovered    = False
 
     def handle_event(self, event: pygame.event.Event) -> bool:
-        """Return True if button was clicked."""
         if not self.enabled:
             return False
         if event.type == pygame.MOUSEMOTION:
@@ -82,24 +87,29 @@ class Button:
 # ─── Board renderer ───────────────────────────────────────────────────────────
 
 class BoardRenderer:
-    """
-    Manages all drawing for an in-progress Annuvin game.
-
-    Call update() every frame.  Returns user actions via handle_event().
-    """
-
     SIDEBAR_WIDTH = 240
 
     def __init__(self, surface: pygame.Surface, game: AnnuvinGame) -> None:
-        self.surface  = surface
-        self.game     = game
-        self.board    = game.board
+        self.surface = surface
+        self.game    = game
+        self.board   = game.board
         self._compute_origin()
 
-        # Interaction state
-        self.selected_cell: Optional[Cube]       = None
-        self.valid_moves_for_selected: List[Move] = []
-        self.hover_cell: Optional[Cube]          = None
+        self.hover_cell: Optional[Cube] = None
+
+        # ── In-progress turn state ───────────────────────────────────────────
+        # _turn_origin: the cell where the selected piece started THIS turn
+        # _active_pos:  the cell where the piece currently is (updated per step)
+        self._turn_origin: Optional[Cube]  = None
+        self._active_pos: Optional[Cube]   = None
+        self._steps_remaining: int         = 0
+        self._path_so_far: List[Cube]      = []     # steps taken so far
+        self._captures_so_far: List[Cube]  = []     # cells of captured pieces
+        self._just_captured: bool          = False  # last step was a capture?
+        self._live_opp: FrozenSet[Cube]    = frozenset()
+        self._next_step_cells: Set[Cube]   = set()
+        self._reachable_cells: Set[Cube]   = set()  # BFS flood for dim hints
+        self._trail_cells: Set[Cube]       = set()  # visual trail
 
         # Fonts
         pygame.font.init()
@@ -111,21 +121,38 @@ class BoardRenderer:
         sw = self.SIDEBAR_WIDTH
         bw, bh = sw - 40, 40
         bx = WINDOW_WIDTH - sw + 20
-        self.btn_save = Button(pygame.Rect(bx, WINDOW_HEIGHT - 160, bw, bh), "Save Game")
-        self.btn_quit = Button(pygame.Rect(bx, WINDOW_HEIGHT - 100, bw, bh), "Quit to Menu")
+        self.btn_stop = Button(
+            pygame.Rect(bx, WINDOW_HEIGHT - 178, bw, bh),
+            "Stop here (capture)",
+            enabled=False,
+            color=(40, 120, 60),
+            hover_color=(60, 160, 80),
+        )
+        self.btn_save = Button(pygame.Rect(bx, WINDOW_HEIGHT - 118, bw, bh), "Save Game")
+        self.btn_quit = Button(pygame.Rect(bx, WINDOW_HEIGHT - 62,  bw, bh), "Quit to Menu")
 
-        # Callback hooks (set by the game scene)
-        self.on_move_selected: Optional[callable] = None   # (Move) -> None
-        self.on_save_requested: Optional[callable]= None   # () -> None
-        self.on_quit_requested: Optional[callable]= None   # () -> None
+        # Callbacks
+        self.on_move_selected:  Optional[callable] = None
+        self.on_save_requested: Optional[callable] = None
+        self.on_quit_requested: Optional[callable] = None
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
     def _compute_origin(self) -> None:
-        """Centre the board in the left area (excluding sidebar)."""
         board_area_w = WINDOW_WIDTH - self.SIDEBAR_WIDTH
         self.origin_x = board_area_w / 2
         self.origin_y = WINDOW_HEIGHT / 2
+
+    # ── Hit testing ───────────────────────────────────────────────────────────
+
+    def _pixel_to_cell(self, px: float, py: float) -> Optional[Cube]:
+        candidate = self.board.pixel_to_cube(
+            px, py, HEX_RADIUS, self.origin_x, self.origin_y)
+        if candidate is None:
+            return None
+        cx, cy = self.board.cube_to_pixel(
+            candidate, HEX_RADIUS, self.origin_x, self.origin_y)
+        return candidate if _pixel_in_hex(px, py, cx, cy, HEX_RADIUS) else None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -133,27 +160,19 @@ class BoardRenderer:
         if self.game.game_over:
             return
 
-        # Sidebar buttons
         if self.btn_save.handle_event(event) and self.on_save_requested:
             self.on_save_requested()
         if self.btn_quit.handle_event(event) and self.on_quit_requested:
             self.on_quit_requested()
+        if self.btn_stop.handle_event(event):
+            self._commit_move()
 
         if event.type == pygame.MOUSEMOTION:
-            self.hover_cell = self.board.pixel_to_cube(
-                event.pos[0], event.pos[1], HEX_RADIUS,
-                self.origin_x, self.origin_y
-            )
-
+            self.hover_cell = self._pixel_to_cell(event.pos[0], event.pos[1])
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            clicked = self.board.pixel_to_cube(
-                event.pos[0], event.pos[1], HEX_RADIUS,
-                self.origin_x, self.origin_y
-            )
-            self._handle_cell_click(clicked)
+            self._handle_cell_click(self._pixel_to_cell(event.pos[0], event.pos[1]))
 
     def update(self) -> None:
-        """Draw the full scene."""
         self.surface.fill(BG_COLOR)
         self._draw_sidebar()
         self._draw_board()
@@ -165,21 +184,23 @@ class BoardRenderer:
 
     def _draw_board(self) -> None:
         last_cells: Set[Cube] = set()
-        if self.game.last_move:
-            last_cells = {self.game.last_move.origin, self.game.last_move.destination}
-
-        valid_dests: Set[Cube] = {m.destination for m in self.valid_moves_for_selected}
+        if self.game.last_move and self._active_pos is None:
+            last_cells = {self.game.last_move.origin,
+                          self.game.last_move.destination}
 
         for cell in self.board.cells:
             cx, cy = self.board.cube_to_pixel(
                 cell, HEX_RADIUS, self.origin_x, self.origin_y)
             corners = _hex_corners(cx, cy, HEX_RADIUS - 2)
 
-            # Choose fill colour
-            if cell == self.selected_cell:
+            if cell == self._active_pos:
                 fill = HEX_SELECTED
-            elif cell in valid_dests:
+            elif cell in self._next_step_cells:
                 fill = HEX_VALID_MOVE
+            elif cell in self._reachable_cells:
+                fill = (40, 100, 55)        # dim green — reachable but not immediate
+            elif cell in self._trail_cells:
+                fill = (60, 80, 140)        # blue-grey trail
             elif cell in last_cells:
                 fill = HEX_LAST_MOVE
             elif cell == self.hover_cell:
@@ -191,98 +212,139 @@ class BoardRenderer:
             pygame.draw.polygon(self.surface, HEX_BORDER, corners, 2)
 
     def _draw_pieces(self) -> None:
-        piece_r = int(HEX_RADIUS * 0.45)
+        piece_r       = int(HEX_RADIUS * 0.45)
         piece_r_inner = int(HEX_RADIUS * 0.28)
+
+        # Enemy pieces already taken this turn — hide them immediately on capture
+        captured_this_turn: set = set(self._captures_so_far)
+        opp = self.game.opponent(self.game.current_player)
 
         for player, color, dark in [
             (PLAYER_1, P1_COLOR, P1_COLOR_DARK),
             (PLAYER_2, P2_COLOR, P2_COLOR_DARK),
         ]:
             for cell in self.game.pieces[player]:
+                # Hide enemy pieces captured mid-turn (game.pieces not updated yet)
+                if player == opp and cell in captured_this_turn:
+                    continue
+
+                # The active piece is stored at _turn_origin in game.pieces;
+                # draw it at _active_pos (its current visual position) instead.
+                draw_cell = cell
+                if (player == self.game.current_player
+                        and cell == self._turn_origin
+                        and self._active_pos is not None
+                        and self._path_so_far):
+                    draw_cell = self._active_pos
+
                 cx, cy = self.board.cube_to_pixel(
-                    cell, HEX_RADIUS, self.origin_x, self.origin_y)
+                    draw_cell, HEX_RADIUS, self.origin_x, self.origin_y)
                 cx, cy = int(cx), int(cy)
-                # Shadow
                 pygame.draw.circle(self.surface, BLACK, (cx + 2, cy + 2), piece_r)
-                # Body
                 pygame.draw.circle(self.surface, color, (cx, cy), piece_r)
-                # Highlight
-                pygame.draw.circle(self.surface, dark, (cx, cy), piece_r, 3)
-                # Inner dot
-                pygame.draw.circle(self.surface, dark, (cx, cy), piece_r_inner)
+                pygame.draw.circle(self.surface, dark,  (cx, cy), piece_r, 3)
+                pygame.draw.circle(self.surface, dark,  (cx, cy), piece_r_inner)
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
     def _draw_sidebar(self) -> None:
         sx = WINDOW_WIDTH - self.SIDEBAR_WIDTH
-        sidebar_rect = pygame.Rect(sx, 0, self.SIDEBAR_WIDTH, WINDOW_HEIGHT)
-        pygame.draw.rect(self.surface, PANEL_COLOR, sidebar_rect)
+        pygame.draw.rect(self.surface, PANEL_COLOR,
+                         pygame.Rect(sx, 0, self.SIDEBAR_WIDTH, WINDOW_HEIGHT))
         pygame.draw.line(self.surface, BORDER_COLOR, (sx, 0), (sx, WINDOW_HEIGHT), 2)
 
-        y = 30
-        # Title
+        y = 20
+
         title = self.font_large.render("ANNUVIN", True, ACCENT_COLOR)
-        self.surface.blit(title, (sx + self.SIDEBAR_WIDTH // 2 - title.get_width() // 2, y))
-        y += 40
+        self.surface.blit(title,
+            (sx + self.SIDEBAR_WIDTH // 2 - title.get_width() // 2, y))
+        y += 36
 
-        # Divider
-        pygame.draw.line(self.surface, BORDER_COLOR, (sx + 10, y), (WINDOW_WIDTH - 10, y), 1)
-        y += 15
+        pygame.draw.line(self.surface, BORDER_COLOR,
+                         (sx + 10, y), (WINDOW_WIDTH - 10, y), 1)
+        y += 12
 
-        # Current turn
         if not self.game.game_over:
             turn_col = P1_COLOR if self.game.current_player == PLAYER_1 else P2_COLOR
-            pname = f"Player {self.game.current_player}"
-            txt = self.font_medium.render("Current Turn:", True, DIM_TEXT_COLOR)
-            self.surface.blit(txt, (sx + 20, y))
-            y += 24
-            txt2 = self.font_large.render(pname, True, turn_col)
-            self.surface.blit(txt2, (sx + 20, y))
-            y += 40
+            self.surface.blit(
+                self.font_medium.render("Current Turn:", True, DIM_TEXT_COLOR),
+                (sx + 20, y))
+            y += 22
+            self.surface.blit(
+                self.font_large.render(f"Player {self.game.current_player}",
+                                       True, turn_col),
+                (sx + 20, y))
+            y += 36
 
-        # Steps available
+        # Steps display
         if not self.game.game_over:
-            steps = self.game.steps_for(self.game.current_player)
-            stxt = self.font_medium.render(f"Steps this turn: {steps}", True, TEXT_COLOR)
-            self.surface.blit(stxt, (sx + 20, y))
-            y += 35
+            total = self.game.steps_for(self.game.current_player)
+            if self._active_pos is not None:
+                label = f"Steps left: {self._steps_remaining} / {total}"
+            else:
+                label = f"Steps this turn: {total}"
+            self.surface.blit(
+                self.font_medium.render(label, True, TEXT_COLOR),
+                (sx + 20, y))
+            y += 28
 
-        # Divider
-        pygame.draw.line(self.surface, BORDER_COLOR, (sx + 10, y), (WINDOW_WIDTH - 10, y), 1)
-        y += 15
+        pygame.draw.line(self.surface, BORDER_COLOR,
+                         (sx + 10, y), (WINDOW_WIDTH - 10, y), 1)
+        y += 12
 
-        # Piece counts
         for player, color, name in [
             (PLAYER_1, P1_COLOR, "Player 1"),
             (PLAYER_2, P2_COLOR, "Player 2"),
         ]:
-            count = self.game.piece_count(player)
-            label = self.font_medium.render(f"{name}: {count} pieces", True, color)
-            self.surface.blit(label, (sx + 20, y))
-            y += 28
+            self.surface.blit(
+                self.font_medium.render(
+                    f"{name}: {self.game.piece_count(player)} pcs",
+                    True, color),
+                (sx + 20, y))
+            y += 26
+        y += 4
+
+        self.surface.blit(
+            self.font_small.render(
+                f"Move #{self.game.move_count + 1}", True, DIM_TEXT_COLOR),
+            (sx + 20, y))
+        y += 22
+
+        pygame.draw.line(self.surface, BORDER_COLOR,
+                         (sx + 10, y), (WINDOW_WIDTH - 10, y), 1)
         y += 10
 
-        # Move counter
-        mc = self.font_small.render(f"Move #{self.game.move_count + 1}", True, DIM_TEXT_COLOR)
-        self.surface.blit(mc, (sx + 20, y))
-        y += 25
+        # Turn status hints
+        if self._active_pos is not None:
+            if self._captures_so_far:
+                self.surface.blit(
+                    self.font_small.render(
+                        f"Captured: {len(self._captures_so_far)}", True, (220, 170, 60)),
+                    (sx + 20, y))
+                y += 20
+            if self._just_captured and self._steps_remaining > 0:
+                msg = "Captured! Stop or keep going"
+                col = (140, 220, 100)
+            elif self._steps_remaining > 0:
+                msg = f"Take {self._steps_remaining} more step(s)"
+                col = DIM_TEXT_COLOR
+            else:
+                msg = "Move complete!"
+                col = ACCENT_COLOR
+            self.surface.blit(
+                self.font_small.render(msg, True, col),
+                (sx + 20, y))
+        else:
+            self.surface.blit(
+                self.font_small.render("Click a piece to move", True, DIM_TEXT_COLOR),
+                (sx + 20, y))
 
-        # Selected piece info
-        if self.selected_cell and not self.game.game_over:
-            pygame.draw.line(self.surface, BORDER_COLOR,
-                             (sx + 10, y), (WINDOW_WIDTH - 10, y), 1)
-            y += 12
-            sel_txt = self.font_small.render("Selected piece", True, ACCENT_COLOR)
-            self.surface.blit(sel_txt, (sx + 20, y))
-            y += 20
-            opt_txt = self.font_small.render(
-                f"{len(self.valid_moves_for_selected)} valid moves", True, TEXT_COLOR)
-            self.surface.blit(opt_txt, (sx + 20, y))
-            y += 30
-            esc_txt = self.font_small.render("Click again to deselect", True, DIM_TEXT_COLOR)
-            self.surface.blit(esc_txt, (sx + 20, y))
+        # Update button states
+        self.btn_stop.enabled   = (self._active_pos is not None
+                                   and self._just_captured
+                                   and self._steps_remaining > 0)
 
-        # Buttons
+        self.btn_stop.draw(self.surface, self.font_medium)
         self.btn_save.draw(self.surface, self.font_medium)
         self.btn_quit.draw(self.surface, self.font_medium)
 
@@ -294,72 +356,184 @@ class BoardRenderer:
         self.surface.blit(overlay, (0, 0))
 
         if self.game.winner == 0:
-            msg = "Draw!"
-            col = ACCENT_COLOR
+            msg, col = "Draw!", ACCENT_COLOR
         else:
             msg = f"Player {self.game.winner} Wins!"
             col = P1_COLOR if self.game.winner == PLAYER_1 else P2_COLOR
 
         font_big = pygame.font.SysFont("segoeui", 52, bold=True)
         font_sub = pygame.font.SysFont("segoeui", 22)
-        text_surf = font_big.render(msg, True, col)
-        self.surface.blit(text_surf, text_surf.get_rect(
+        t = font_big.render(msg, True, col)
+        self.surface.blit(t, t.get_rect(
             center=(WINDOW_WIDTH // 2 - self.SIDEBAR_WIDTH // 2,
                     WINDOW_HEIGHT // 2 - 30)))
-        sub_surf = font_sub.render("Press ENTER to return to menu", True, WHITE)
-        self.surface.blit(sub_surf, sub_surf.get_rect(
+        s = font_sub.render("Press ENTER to return to menu", True, WHITE)
+        self.surface.blit(s, s.get_rect(
             center=(WINDOW_WIDTH // 2 - self.SIDEBAR_WIDTH // 2,
                     WINDOW_HEIGHT // 2 + 30)))
 
-    # ── Click handling (piece selection & move execution) ─────────────────────
+    # ── Turn management ───────────────────────────────────────────────────────
+
+    def _reset_turn(self) -> None:
+        """Abandon in-progress turn, return to piece-selection state."""
+        self._turn_origin     = None
+        self._active_pos      = None
+        self._steps_remaining = 0
+        self._path_so_far     = []
+        self._captures_so_far = []
+        self._just_captured   = False
+        self._live_opp        = frozenset()
+        self._next_step_cells = set()
+        self._reachable_cells = set()
+        self._trail_cells     = set()
+
+    def _start_turn(self, piece: Cube) -> None:
+        """Begin a new turn for *piece*."""
+        player = self.game.current_player
+        self._turn_origin     = piece
+        self._active_pos      = piece
+        self._steps_remaining = self.game.steps_for(player)
+        self._path_so_far     = []
+        self._captures_so_far = []
+        self._just_captured   = False
+        self._live_opp        = frozenset(
+            self.game.pieces[self.game.opponent(player)])
+        self._trail_cells     = set()
+        self._refresh_next_steps()
+        self._refresh_reachable()
+
+    def _refresh_next_steps(self) -> None:
+        """Compute the set of cells the active piece can step to in ONE step."""
+        if self._active_pos is None:
+            self._next_step_cells = set()
+            return
+
+        player  = self.game.current_player
+        own     = self.game.pieces[player]
+        current = self._active_pos
+        result: Set[Cube] = set()
+
+        for d in CUBE_DIRECTIONS:
+            nxt = _cube_add(current, d)
+            if not self.board.is_valid(nxt):
+                continue
+            # Cannot enter a cell occupied by an own piece
+            # (the piece that is currently moving started at _turn_origin;
+            #  its spot in game.pieces is still the origin, so exclude it only
+            #  if it's a *different* own piece)
+            if nxt in own and nxt != self._turn_origin:
+                continue
+            result.add(nxt)
+
+        self._next_step_cells = result
+
+    def _refresh_reachable(self) -> None:
+        """BFS flood-fill up to _steps_remaining hops — shown as dim green hints."""
+        if self._active_pos is None or self._steps_remaining == 0:
+            self._reachable_cells = set()
+            return
+
+        own    = self.game.pieces[self.game.current_player]
+        result: Set[Cube] = set()
+        from collections import deque
+        queue: deque = deque([(self._active_pos, self._steps_remaining)])
+        visited = {self._active_pos}
+
+        while queue:
+            cell, remaining = queue.popleft()
+            if remaining == 0:
+                continue
+            for d in CUBE_DIRECTIONS:
+                nxt = _cube_add(cell, d)
+                if not self.board.is_valid(nxt):
+                    continue
+                if nxt in own and nxt != self._turn_origin:
+                    continue
+                result.add(nxt)
+                if nxt not in visited:
+                    visited.add(nxt)
+                    queue.append((nxt, remaining - 1))
+
+        # Remove the immediate next-step cells — they already have their own highlight
+        self._reachable_cells = result - self._next_step_cells
+
+    def _take_step(self, dest: Cube) -> None:
+        """Advance the active piece one step to *dest*."""
+        is_capture = dest in self._live_opp
+
+        self._path_so_far.append(dest)
+        self._trail_cells.add(dest)
+        self._steps_remaining -= 1
+        self._active_pos = dest
+
+        if is_capture:
+            self._captures_so_far.append(dest)
+            self._live_opp = frozenset(c for c in self._live_opp if c != dest)
+            self._just_captured = True
+        else:
+            self._just_captured = False
+
+        # Auto-commit: no steps left
+        if self._steps_remaining == 0:
+            self._commit_move()
+            return
+
+        # Refresh valid next-step cells and reachable area
+        self._refresh_next_steps()
+        self._refresh_reachable()
+
+        # Auto-commit: completely blocked with steps remaining (forced stop)
+        if not self._next_step_cells:
+            self._commit_move()
+
+    def _commit_move(self) -> None:
+        """Apply the accumulated path as a Move to the game."""
+        if not self._path_so_far:
+            self._reset_turn()
+            return
+
+        move = Move(
+            origin=self._turn_origin,
+            path=list(self._path_so_far),
+            captures=list(self._captures_so_far),
+        )
+        self._reset_turn()
+        if self.on_move_selected:
+            self.on_move_selected(move)
+
+    # ── Click handling ────────────────────────────────────────────────────────
 
     def _handle_cell_click(self, clicked: Optional[Cube]) -> None:
         if clicked is None:
             return
+
         player = self.game.current_player
 
-        # Case 1: no piece selected yet
-        if self.selected_cell is None:
+        # ── No piece in progress: select a piece ─────────────────────────────
+        if self._active_pos is None:
             if clicked in self.game.pieces[player]:
-                self._select(clicked)
+                self._start_turn(clicked)
             return
 
-        # Case 2: clicking the same cell → deselect
-        if clicked == self.selected_cell:
-            self._deselect()
+        # ── Turn in progress ─────────────────────────────────────────────────
+
+        # Clicking the active piece's current cell:
+        #   - If no steps taken yet → deselect (cancel before first step)
+        #   - If steps taken → ignore (can't go back)
+        if clicked == self._active_pos:
+            if not self._path_so_far:
+                self._reset_turn()
             return
 
-        # Case 3: clicking another own piece → reselect
-        if clicked in self.game.pieces[player]:
-            self._select(clicked)
+        # Clicking a different OWN piece → cancel and start fresh with it
+        if clicked in self.game.pieces[player] and clicked != self._turn_origin:
+            self._reset_turn()
+            self._start_turn(clicked)
             return
 
-        # Case 4: attempt a move to the clicked destination
-        candidates = [m for m in self.valid_moves_for_selected
-                      if m.destination == clicked]
-        if not candidates:
-            # Invalid destination — do nothing
+        # Clicking a valid next-step destination → take the step
+        if clicked in self._next_step_cells:
+            self._take_step(clicked)
             return
 
-        if len(candidates) == 1:
-            self._execute_move(candidates[0])
-        else:
-            # Multiple paths lead to the same destination.
-            # Prefer the one with the most captures; if still tied, take first.
-            best = max(candidates, key=lambda m: len(m.captures))
-            self._execute_move(best)
-
-    def _select(self, cell: Cube) -> None:
-        self.selected_cell = cell
-        player = self.game.current_player
-        all_legal = self.game.legal_moves(player)
-        self.valid_moves_for_selected = [m for m in all_legal if m.origin == cell]
-
-    def _deselect(self) -> None:
-        self.selected_cell = None
-        self.valid_moves_for_selected = []
-
-    def _execute_move(self, move: Move) -> None:
-        if self.on_move_selected:
-            self.on_move_selected(move)
-        self._deselect()
+        # Anything else → ignore
