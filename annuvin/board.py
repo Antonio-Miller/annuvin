@@ -102,46 +102,12 @@ class HexBoard:
     # ── Initial piece placement ───────────────────────────────────────────────
 
     def initial_positions(self) -> Dict[int, List[Cube]]:
-        """
-        Return the starting positions for both players on a HexHex-4 board.
-
-        Player 1 occupies one corner cluster; Player 2 occupies the opposite.
-        Each player starts with 6 pieces arranged in the corner region
-        (the cell at maximum negative q + r + s corner and its 5 nearest neighbours
-        within the board).
-        """
-        n = self.size - 1  # == 3 for standard board
-
-        # Corner cells for player 1: top-left corner cluster
-        # In cube coordinates the "top-left" corner anchor is (-n, n, 0) area.
-        # We pick the 6 cells closest to the corner (-n, 0, n).
-        p1_anchor: Cube = (-n, 0, n)
-        p2_anchor: Cube = (n, 0, -n)
-
-        p1_cells = self._corner_cluster(p1_anchor, 6)
-        p2_cells = self._corner_cluster(p2_anchor, 6)
-
+        p1_cells = [
+            (0, -3,  3),          # tip
+           (0, -2, 2), (1, -3, 2), (2, -3, 1), (-2, -1, 3), (-1, -2, 3)
+        ]
+        p2_cells = [(-q, -r, -s) for q, r, s in p1_cells]
         return {1: p1_cells, 2: p2_cells}
-
-    def _corner_cluster(self, anchor: Cube, count: int) -> List[Cube]:
-        """BFS from *anchor* to collect *count* cells (anchor first)."""
-        visited: List[Cube] = []
-        queue = [anchor]
-        seen: Set[Cube] = {anchor}
-        while queue and len(visited) < count:
-            cell = queue.pop(0)
-            visited.append(cell)
-            for nb in sorted(self.neighbours(cell),
-                             key=lambda c: _cube_distance(c, anchor)):
-                if nb not in seen:
-                    seen.add(nb)
-                    queue.append(nb)
-        return visited[:count]
-
-    def all_cells_sorted(self) -> List[Cube]:
-        """Return all cells sorted for deterministic iteration."""
-        return sorted(self.cells)
-
 
 # ── Cube rounding ─────────────────────────────────────────────────────────────
 
