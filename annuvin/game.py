@@ -44,6 +44,7 @@ Draw: 150-move limit to avoid infinite games.
 from __future__ import annotations
 
 import copy
+import sys
 from dataclasses import dataclass, field
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
@@ -51,6 +52,7 @@ from annuvin.board import HexBoard, Cube, _cube_add, CUBE_DIRECTIONS
 
 DRAW_MOVE_LIMIT = 150   # half-moves before automatic draw
 
+sys.setrecursionlimit(10000)
 
 # ─── Data transfer objects ────────────────────────────────────────────────────
 
@@ -107,7 +109,7 @@ class AnnuvinGame:
 
     # ── Move generation ───────────────────────────────────────────────────────
 
-    def legal_moves(self, player: Optional[int] = None) -> List[Move]:
+    def legal_moves(self, player: Optional[int] = None, max_moves=200) -> List[Move]:
         """Return every legal move for *player* (defaults to current_player)."""
         if player is None:
             player = self.current_player
@@ -126,6 +128,8 @@ class AnnuvinGame:
                 just_captured=False,
                 results=moves,
             )
+            if len(moves) >= max_moves:
+                break
         return moves
 
     def _expand_paths(
@@ -403,7 +407,7 @@ class MinimaxAI(AnnuvinAI):
         hard   → depth 5
     """
 
-    DEPTH_MAP = {"easy": 1, "medium": 3, "hard": 5}
+    DEPTH_MAP = {"easy": 1, "medium": 2, "hard": 3}
 
     def __init__(self, player: int, skill: str = "medium") -> None:
         super().__init__(player, skill)

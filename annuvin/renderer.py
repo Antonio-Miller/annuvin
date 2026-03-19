@@ -94,6 +94,7 @@ class BoardRenderer:
         self.game    = game
         self.board   = game.board
         self._compute_origin()
+        self.player_names: dict = {1: "Player 1", 2: "Player 2"}
 
         self.hover_cell: Optional[Cube] = None
 
@@ -271,7 +272,7 @@ class BoardRenderer:
                 (sx + 20, y))
             y += 22
             self.surface.blit(
-                self.font_large.render(f"Player {self.game.current_player}",
+                self.font_large.render(self.player_names[self.game.current_player],
                                        True, turn_col),
                 (sx + 20, y))
             y += 36
@@ -292,10 +293,11 @@ class BoardRenderer:
                          (sx + 10, y), (WINDOW_WIDTH - 10, y), 1)
         y += 12
 
-        for player, color, name in [
-            (PLAYER_1, P1_COLOR, "Player 1"),
-            (PLAYER_2, P2_COLOR, "Player 2"),
+        for player, color in [
+            (PLAYER_1, P1_COLOR),
+            (PLAYER_2, P2_COLOR),
         ]:
+            name = self.player_names[player]
             self.surface.blit(
                 self.font_medium.render(
                     f"{name}: {self.game.piece_count(player)} pcs",

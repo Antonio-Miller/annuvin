@@ -19,6 +19,7 @@ Controls during a game:
 from __future__ import annotations
 
 import os
+import threading
 import sys
 import time
 from enum import Enum, auto
@@ -69,6 +70,8 @@ class AnnuvinApp:
         self.clock   = pygame.time.Clock()
         self.running = True
         self._ai: Optional[object] = None  
+        self._ai_thinking = False
+        self._ai_pending_move = None
 
         # Game state
         self._state: AppState       = AppState.MAIN_MENU
@@ -132,6 +135,7 @@ class AnnuvinApp:
 
     def _setup_renderer(self) -> None:
         r = BoardRenderer(self.screen, self._game)
+        r.player_names      = self._player_names
         r.on_move_selected  = self._apply_human_move
         r.on_save_requested = self._go_to_save_dialog
         r.on_quit_requested = self._go_to_main_menu
@@ -178,10 +182,16 @@ class AnnuvinApp:
                 self._do_ai_move()
 
     def _do_ai_move(self) -> None:
-        if self._game and self._ai:
+        self._ai_thinking = True
+
+        def run():
             move = self._ai.choose_move(self._game)
-            if move:
-                self._game.apply_move(move)
+            self._ai_pending_move = move
+            self._ai_thinking = False
+
+        self._ai_pending_move = None
+        threading.Thread(target=run, daemon=True).start()
+
     # ── Save / Load ───────────────────────────────────────────────────────────
 
     def _save_game_to_file(self, filepath: str) -> None:
@@ -284,6 +294,12 @@ class AnnuvinApp:
 
                 # Route events to the active screen
                 self._dispatch_event(event)
+            
+            if (self._mode == GameMode.HUMAN_VS_AI and self._ai_pending_move is not None and not self._ai_thinking):
+                move = self._ai_pending_move
+                self._ai_pending_move = None
+                if self._game and not self._game.game_over:
+                    self._game.apply_move(move)
 
             self._draw()
             self._draw_toast()
@@ -315,10 +331,10 @@ class AnnuvinApp:
             self._rules_screen.update()
         elif self._state == AppState.PLAYING and self._renderer:
             self._renderer.update()
-            self._draw_player_name_labels()
         elif self._state == AppState.SAVE_DIALOG:
             # Draw game underneath
             if self._renderer:
+                self._renderer.ai_thinking = self._ai_thinking
                 self._renderer.update()
             if self._save_dialog:
                 self._save_dialog.update()
@@ -327,22 +343,6 @@ class AnnuvinApp:
                 self._main_menu.update()
             if self._load_dialog:
                 self._load_dialog.update()
-
-    def _draw_player_name_labels(self) -> None:
-        """Overlay player names on the sidebar."""
-        if not self._renderer:
-            return
-        from annuvin.renderer import BoardRenderer
-        sx = WINDOW_WIDTH - BoardRenderer.SIDEBAR_WIDTH + 20
-        font = self._font_small
-        n1 = self._font_small.render(
-            f"  {self._player_names[1]}", True, P1_COLOR)
-        n2 = self._font_small.render(
-            f"  {self._player_names[2]}", True, P2_COLOR)
-        y_base = 268   # just below the piece-count lines
-        self.screen.blit(n1, (sx + 70, y_base))
-        self.screen.blit(n2, (sx + 70, y_base + 28))
-
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
