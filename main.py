@@ -139,6 +139,13 @@ class AnnuvinApp:
         r.on_move_selected  = self._apply_human_move
         r.on_save_requested = self._go_to_save_dialog
         r.on_quit_requested = self._go_to_main_menu
+
+        # Only player 1 is human in HvAI mode
+        if self._mode == GameMode.HUMAN_VS_AI:
+            r.human_players = {1}
+        else:
+            r.human_players = {1, 2}   # both human in HvH
+
         self._renderer = r
 
     def _go_to_save_dialog(self) -> None:
@@ -183,9 +190,10 @@ class AnnuvinApp:
 
     def _do_ai_move(self) -> None:
         self._ai_thinking = True
+        game_snapshot = self._game.clone()
 
         def run():
-            move = self._ai.choose_move(self._game)
+            move = self._ai.choose_move(game_snapshot)
             self._ai_pending_move = move
             self._ai_thinking = False
 

@@ -114,6 +114,7 @@ class AnnuvinGame:
         if player is None:
             player = self.current_player
         steps = self.steps_for(player)
+        adjusted_max = max(30, max_moves // steps)
         moves: List[Move] = []
         for origin in list(self.pieces[player]):
             self._expand_paths(
@@ -128,7 +129,7 @@ class AnnuvinGame:
                 just_captured=False,
                 results=moves,
             )
-            if len(moves) >= max_moves:
+            if len(moves) >= adjusted_max:
                 break
         return moves
 
@@ -403,15 +404,15 @@ class MinimaxAI(AnnuvinAI):
     depth : int
         Search depth (higher = stronger but slower).
         easy   → depth 1
-        medium → depth 3
-        hard   → depth 5
+        medium → depth 2
+        hard   → depth 3
     """
 
     DEPTH_MAP = {"easy": 1, "medium": 2, "hard": 3}
 
-    def __init__(self, player: int, skill: str = "medium") -> None:
+    def __init__(self, player: int, skill: str = "easy") -> None:
         super().__init__(player, skill)
-        self.depth = self.DEPTH_MAP.get(skill, 3)
+        self.depth = self.DEPTH_MAP.get(skill, 1)
 
     def choose_move(self, game: AnnuvinGame) -> Move:
         best_move = None

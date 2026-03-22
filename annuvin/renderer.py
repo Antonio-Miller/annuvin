@@ -95,6 +95,7 @@ class BoardRenderer:
         self.board   = game.board
         self._compute_origin()
         self.player_names: dict = {1: "Player 1", 2: "Player 2"}
+        self.human_players: set = {1, 2}
 
         self.hover_cell: Optional[Cube] = None
 
@@ -507,6 +508,10 @@ class BoardRenderer:
 
     def _handle_cell_click(self, clicked: Optional[Cube]) -> None:
         if clicked is None:
+            return
+        
+        # Block input if current player is not human
+        if self.game.current_player not in self.human_players:
             return
 
         player = self.game.current_player
