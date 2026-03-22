@@ -466,12 +466,19 @@ class MinimaxAI(AnnuvinAI):
             return -10_000.0
         if game.winner == 0:
             return 0.0
-        # Material score: each of our pieces = +10, each opponent piece = -10
-        score  =  10 * game.piece_count(self.player)
-        score -= 10 * game.piece_count(opp)
-        # Mobility score: more moves available = better
-        score += 0.5 * len(game.legal_moves(self.player))
-        score -= 0.5 * len(game.legal_moves(opp))
+        
+        own_count = game.piece_count(self.player)
+        opp_count = game.piece_count(opp)
+
+        # Material — the only thing that really matters
+        score = 200 * (own_count - opp_count)
+
+        # Proximity — reward being close to enemy pieces
+        for own in game.pieces[self.player]:
+            if game.pieces[opp]:
+                min_dist = min(game.board.distance(own, e) for e in game.pieces[opp])
+                score -= 5 * min_dist
+
         return score
 
 
