@@ -379,7 +379,7 @@ class AnnuvinGame:
         return "\n".join(lines)
 
 
-# ─── AI placeholder ────────────────────────────────────────────────────────────
+# ─── AI ────────────────────────────────────────────────────────────
 
 # The AI module will be implemented in a later phase of the project.
 # The stubs below define the interface so that the rest of the code can

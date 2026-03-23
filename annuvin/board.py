@@ -19,12 +19,12 @@ from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
 # Six axial directions for cube coordinates
 CUBE_DIRECTIONS: List[Tuple[int, int, int]] = [
-    ( 1, -1,  0),
-    ( 1,  0, -1),
-    ( 0,  1, -1),
-    (-1,  1,  0),
-    (-1,  0,  1),
-    ( 0, -1,  1),
+    ( 1, -1,  0), # right
+    ( 1,  0, -1), # up-right
+    ( 0,  1, -1), # down-right
+    (-1,  1,  0), # left
+    (-1,  0,  1), # down-left
+    ( 0, -1,  1), # up-left
 ]
 
 Cube = Tuple[int, int, int]
