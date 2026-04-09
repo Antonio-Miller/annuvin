@@ -13,6 +13,7 @@ Clicking a different own piece mid-turn cancels and restarts with that piece.
 from __future__ import annotations
 
 import math
+import time
 from typing import Dict, List, Optional, Set, Tuple, FrozenSet
 
 import pygame
@@ -96,6 +97,8 @@ class BoardRenderer:
         self._compute_origin()
         self.player_names: dict = {1: "Player 1", 2: "Player 2"}
         self.human_players: set = {1, 2}
+        self.ai_think_start: float = 0.0
+        self.ai_think_delay: float = 0.8
 
         self.hover_cell: Optional[Cube] = None
 
@@ -181,6 +184,8 @@ class BoardRenderer:
         self._draw_pieces()
         if self.game.game_over:
             self._draw_game_over_overlay()
+        if self.ai_think_start > 0 and (time.time() - self.ai_think_start) > self.ai_think_delay:
+            self._draw_thinking_indicator()
 
     # ── Board drawing ─────────────────────────────────────────────────────────
 
@@ -542,5 +547,43 @@ class BoardRenderer:
         if clicked in self._next_step_cells:
             self._take_step(clicked)
             return
+        
+    def _draw_thinking_indicator(self) -> None:
+        """Pulsing 'AI is thinking' banner across the board area."""
+        import time
+
+        board_area_w = WINDOW_WIDTH - self.SIDEBAR_WIDTH
+        pulse = (math.sin(time.time() * 3) + 1) / 2   # 0.0 → 1.0, ~3Hz
+
+        # Semi-transparent overlay on board area only
+        overlay = pygame.Surface((board_area_w, WINDOW_HEIGHT), pygame.SRCALPHA)
+        alpha = int(30 + 20 * pulse)
+        overlay.fill((20, 20, 60, alpha))
+        self.surface.blit(overlay, (0, 0))
+
+        # Banner bar
+        bar_h = 52
+        bar_y = WINDOW_HEIGHT // 2 - bar_h // 2
+        bar_rect = pygame.Rect(0, bar_y, board_area_w, bar_h)
+        bar_alpha = int(200 + 40 * pulse)
+        bar_surf = pygame.Surface((board_area_w, bar_h), pygame.SRCALPHA)
+        bar_surf.fill((28, 28, 60, bar_alpha))
+        self.surface.blit(bar_surf, (0, bar_y))
+
+        # Animated dots  "Thinking ● ● ●"
+        dot_count = int(time.time() * 2) % 4   # cycles 0-3
+        dots = " ●" * dot_count
+        font = pygame.font.SysFont("segoeui", 22, bold=True)
+        label = font.render(f"AI is thinking{dots}", True, (180, 200, 255))
+        self.surface.blit(label, label.get_rect(
+            center=(board_area_w // 2, bar_y + bar_h // 2)))
+
+        # Thin pulsing border lines on the bar
+        line_alpha = int(100 + 100 * pulse)
+        line_col = (80, 100, 200, line_alpha)
+        for ly in (bar_y, bar_y + bar_h - 1):
+            line_surf = pygame.Surface((board_area_w, 2), pygame.SRCALPHA)
+            line_surf.fill(line_col)
+            self.surface.blit(line_surf, (0, ly))
 
         # Anything else → ignore

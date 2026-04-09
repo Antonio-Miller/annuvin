@@ -70,6 +70,8 @@ class AnnuvinApp:
         self.clock   = pygame.time.Clock()
         self.running = True
         self._ai: Optional[object] = None  
+        self._ai_think_start: float = 0.0
+        self._ai_think_delay: float = 0.8
         self._ai_thinking = False
         self._ai_pending_move = None
 
@@ -190,6 +192,7 @@ class AnnuvinApp:
 
     def _do_ai_move(self) -> None:
         self._ai_thinking = True
+        self._ai_think_start = time.time()
         game_snapshot = self._game.clone()
 
         def run():
@@ -338,11 +341,12 @@ class AnnuvinApp:
         elif self._state == AppState.RULES and self._rules_screen:
             self._rules_screen.update()
         elif self._state == AppState.PLAYING and self._renderer:
+            self._renderer.ai_think_start = self._ai_think_start if self._ai_thinking else 0.0
             self._renderer.update()
         elif self._state == AppState.SAVE_DIALOG:
             # Draw game underneath
             if self._renderer:
-                self._renderer.ai_thinking = self._ai_thinking
+                self._renderer.ai_think_start = self._ai_think_start if self._ai_thinking else 0.0
                 self._renderer.update()
             if self._save_dialog:
                 self._save_dialog.update()
