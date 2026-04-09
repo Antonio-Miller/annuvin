@@ -44,8 +44,13 @@ Draw: 150-move limit to avoid infinite games.
 from __future__ import annotations
 
 import copy
+import random
+import time
+import threading
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
 from annuvin.board import HexBoard, Cube, _cube_add, CUBE_DIRECTIONS
@@ -53,6 +58,26 @@ from annuvin.board import HexBoard, Cube, _cube_add, CUBE_DIRECTIONS
 DRAW_MOVE_LIMIT = 150   # half-moves before automatic draw
 
 sys.setrecursionlimit(10000)
+
+
+# ─── AI logging ──────────────────────────────────────────────────────────────
+
+class AILogger:
+    """Append AI decision traces to a text file."""
+
+    def __init__(self, filepath: str, clear: bool = False) -> None:
+        self.path = Path(filepath)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        if clear:
+            self.path.write_text("", encoding="utf-8")
+
+    def log(self, message: str) -> None:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"[{timestamp}] {message}\n"
+        with self._lock:
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(line)
 
 # ─── Data transfer objects ────────────────────────────────────────────────────
 
@@ -114,7 +139,7 @@ class AnnuvinGame:
         if player is None:
             player = self.current_player
         steps = self.steps_for(player)
-        adjusted_max = max(30, max_moves // steps)
+        adjusted_max = max(1, min(max_moves, max(30, max_moves // steps)))
         moves: List[Move] = []
         for origin in list(self.pieces[player]):
             self._expand_paths(
@@ -388,9 +413,15 @@ class AnnuvinGame:
 class AnnuvinAI:
     """Base class for computer players."""
 
-    def __init__(self, player: int, skill: str = "medium") -> None:
+    def __init__(self, player: int, skill: str = "medium",
+                 logger: Optional[AILogger] = None) -> None:
         self.player = player
         self.skill  = skill   # "easy" | "medium" | "hard"
+        self.logger = logger
+
+    def _log(self, message: str) -> None:
+        if self.logger is not None:
+            self.logger.log(message)
 
     def choose_move(self, game: AnnuvinGame) -> Move:
         raise NotImplementedError
@@ -408,37 +439,192 @@ class MinimaxAI(AnnuvinAI):
         hard   → depth 3
     """
 
-    DEPTH_MAP = {"easy": 1, "medium": 2, "hard": 3}
+    SKILL_PROFILES = {
+        "easy": {
+            "depth": 1,
+            "root_limit": 12,
+            "branch_limit": 6,
+            "time_limit": 0.15,
+            "capture_bonus": 30.0,
+            "material": 90.0,
+            "speed": 20.0,
+            "alternate": 300.0,
+            "threat_penalty": 70.0,
+            "threat_reward": 10.0,
+            "mobility": 4.0,
+            "centrality": 2.0,
+            "proximity": 0.0,
+        },
+        "medium": {
+            "depth": 2,
+            "root_limit": 32,
+            "branch_limit": 18,
+            "time_limit": 0.90,
+            "capture_bonus": 150.0,
+            "material": 160.0,
+            "speed": 45.0,
+            "alternate": 900.0,
+            "threat_penalty": 80.0,
+            "threat_reward": 50.0,
+            "mobility": 8.0,
+            "centrality": 4.0,
+            "proximity": -2.0,
+        },
+        "hard": {
+            "depth": 3,
+            "root_limit": 96,
+            "branch_limit": 52,
+            "time_limit": 2.50,
+            "capture_bonus": 320.0,
+            "material": 250.0,
+            "speed": 40.0,
+            "alternate": 1600.0,
+            "threat_penalty": 95.0,
+            "threat_reward": 95.0,
+            "mobility": 6.0,
+            "centrality": 3.0,
+            "proximity": -6.0,
+        },
+    }
 
-    def __init__(self, player: int, skill: str = "easy") -> None:
-        super().__init__(player, skill)
-        self.depth = self.DEPTH_MAP.get(skill, 1)
+    def __init__(self, player: int, skill: str = "easy",
+                 logger: Optional[AILogger] = None) -> None:
+        super().__init__(player, skill, logger=logger)
+        self.profile = self.SKILL_PROFILES.get(skill, self.SKILL_PROFILES["easy"])
+        self.depth = self.profile["depth"]
+
+    def _move_order_key(self, game: AnnuvinGame, move: Move) -> Tuple[int, int, int, int]:
+        current_player = game.current_player
+        enemy_player = self.player if current_player != self.player else game.opponent(self.player)
+        enemy_pieces = game.pieces[enemy_player]
+
+        if enemy_pieces:
+            nearest_enemy = min(game.board.distance(move.destination, piece) for piece in enemy_pieces)
+        else:
+            nearest_enemy = 0
+
+        nearest_enemy_origin = nearest_enemy
+        if enemy_pieces:
+            nearest_enemy_origin = min(game.board.distance(move.origin, piece) for piece in enemy_pieces)
+
+        distance_delta = nearest_enemy_origin - nearest_enemy
+        aggression = distance_delta
+        if current_player == self.player:
+            aggression += len(move.captures) * 2
+
+        return (
+            -len(move.captures),
+            -aggression,
+            nearest_enemy,
+            game.board.distance(move.destination, (0, 0, 0)),
+        )
+
+    def _ordered_moves(self, game: AnnuvinGame, moves: List[Move], limit: int) -> List[Move]:
+        ordered = sorted(moves, key=lambda move: self._move_order_key(game, move))
+        return ordered[:limit]
+
+    def _capture_bonus(self, game: AnnuvinGame, move: Move) -> float:
+        bonus = self.profile["capture_bonus"] * len(move.captures)
+        if not move.captures and self.skill in ("medium", "hard"):
+            enemy_player = game.opponent(self.player)
+            enemy_pieces = game.pieces[enemy_player]
+            if enemy_pieces:
+                origin_distance = min(game.board.distance(move.origin, piece) for piece in enemy_pieces)
+                destination_distance = min(game.board.distance(move.destination, piece) for piece in enemy_pieces)
+                bonus += max(0, origin_distance - destination_distance) * (10 if self.skill == "medium" else 18)
+        return bonus
 
     def choose_move(self, game: AnnuvinGame) -> Move:
-        best_move = None
+        deadline = time.perf_counter() + self.profile["time_limit"]
+        opp = game.opponent(self.player)
+        self._log(
+            f"Turn start for player {self.player}: skill={self.skill}, depth={self.depth}, "
+            f"pieces={game.piece_count(self.player)}, opponent_pieces={game.piece_count(opp)}, "
+            f"steps={game.steps_for(self.player)}, time_limit={self.profile['time_limit']:.2f}s"
+        )
+
+        legal_moves = self._ordered_moves(
+            game,
+            game.legal_moves(self.player, max_moves=self.profile["root_limit"]),
+            self.profile["root_limit"],
+        )
+        self._log(f"Root search space: {len(legal_moves)} legal move(s)")
+
+        if not legal_moves:
+            self._log("No legal moves available; raising error.")
+            raise RuntimeError("MinimaxAI.choose_move called with no legal moves")
+
+        best_move = legal_moves[0]
         best_score = float("-inf")
+        scored_options: List[Tuple[float, Move]] = []
         alpha, beta = float("-inf"), float("inf")
-        for move in game.legal_moves(self.player):
+        for index, move in enumerate(legal_moves, 1):
+            if time.perf_counter() >= deadline:
+                self._log(f"Search time budget exhausted after {index - 1} option(s).")
+                break
             child = game.clone()
             child.apply_move(move)
-            score = self._minimax(child, self.depth - 1, alpha, beta, False)
+            static_score, breakdown = self._evaluate_with_breakdown(child)
+            score = self._minimax(child, self.depth - 1, alpha, beta, False, deadline)
+            score += self._capture_bonus(game, move)
+            scored_options.append((score, move))
+            self._log(
+                f"Option {index}: {move.origin} -> {move.destination}, caps={len(move.captures)}, "
+                f"static={static_score:.1f}, search={score:.1f}, "
+                f"material={breakdown['material']:.1f}, speed={breakdown['speed']:.1f}, "
+                f"threat={breakdown['threat']:.1f}, mobility={breakdown['mobility']:.1f}, "
+                f"center={breakdown['centrality']:.1f}, proximity={breakdown['proximity']:.1f}"
+            )
             if score > best_score:
                 best_score = score
                 best_move = move
             alpha = max(alpha, best_score)
+
+        if best_score == float("-inf"):
+            best_score = self._capture_bonus(game, best_move)
+
+        if scored_options:
+            ranked = sorted(scored_options, key=lambda item: item[0], reverse=True)
+            if self.skill == "easy":
+                # Easy intentionally avoids always picking the best line.
+                lower = 1 if len(ranked) > 1 else 0
+                upper = min(len(ranked), 5)
+                pool = ranked[lower:upper] or ranked
+                best_score, best_move = random.choice(pool)
+                self._log("Easy mode selected a non-optimal candidate from the top pool.")
+            elif self.skill == "hard":
+                # Hard always takes the strongest evaluated option.
+                best_score, best_move = ranked[0]
+
+        if not any(move.captures for move in legal_moves):
+            self._log("No immediate capture was available; selecting the most aggressive legal move.")
+
+        self._log(
+            f"Chosen move: {best_move.origin} -> {best_move.destination}, caps={len(best_move.captures)}, "
+            f"score={best_score:.1f}"
+        )
         return best_move
 
     def _minimax(self, game: AnnuvinGame, depth: int,
-                 alpha: float, beta: float, maximising: bool) -> float:
+                 alpha: float, beta: float, maximising: bool,
+                 deadline: Optional[float] = None) -> float:
+        if deadline is not None and time.perf_counter() >= deadline:
+            return self._evaluate(game)
         if game.game_over or depth == 0:
             return self._evaluate(game)
-        moves = game.legal_moves()
+        moves = self._ordered_moves(
+            game,
+            game.legal_moves(max_moves=self.profile["branch_limit"]),
+            self.profile["branch_limit"],
+        )
         if maximising:
             value = float("-inf")
             for move in moves:
+                if deadline is not None and time.perf_counter() >= deadline:
+                    break
                 child = game.clone()
                 child.apply_move(move)
-                value = max(value, self._minimax(child, depth-1, alpha, beta, False))
+                value = max(value, self._minimax(child, depth-1, alpha, beta, False, deadline))
                 alpha = max(alpha, value)
                 if beta <= alpha:
                     break  # β cut-off
@@ -446,9 +632,11 @@ class MinimaxAI(AnnuvinAI):
         else:
             value = float("inf")
             for move in moves:
+                if deadline is not None and time.perf_counter() >= deadline:
+                    break
                 child = game.clone()
                 child.apply_move(move)
-                value = min(value, self._minimax(child, depth-1, alpha, beta, True))
+                value = min(value, self._minimax(child, depth-1, alpha, beta, True, deadline))
                 beta = min(beta, value)
                 if beta <= alpha:
                     break  # α cut-off
@@ -459,15 +647,36 @@ class MinimaxAI(AnnuvinAI):
         Heuristic evaluation function.
         Positive values favour self.player, negative favour opponent.
         """
+        score, _ = self._evaluate_with_breakdown(game)
+        return score
+
+    def _evaluate_with_breakdown(self, game: AnnuvinGame) -> Tuple[float, Dict[str, float]]:
+        """Return the heuristic score plus a component breakdown for logging."""
         opp = 2 if self.player == 1 else 1
+
+        breakdown: Dict[str, float] = {
+            "material": 0.0,
+            "speed": 0.0,
+            "alternate": 0.0,
+            "threat": 0.0,
+            "mobility": 0.0,
+            "centrality": 0.0,
+            "proximity": 0.0,
+        }
 
         # ── Terminal states ───────────────────────────────────────────────────
         if game.winner == self.player:
-            return 10_000.0
+            score = 10_000.0
+            breakdown["terminal"] = score
+            return score, breakdown
         if game.winner == opp:
-            return -10_000.0
+            score = -10_000.0
+            breakdown["terminal"] = score
+            return score, breakdown
         if game.winner == 0:
-            return 0.0
+            score = 0.0
+            breakdown["terminal"] = score
+            return score, breakdown
 
         own_count = game.piece_count(self.player)
         opp_count = game.piece_count(opp)
@@ -479,21 +688,24 @@ class MinimaxAI(AnnuvinAI):
         # ── Material (dampened) ───────────────────────────────────────────────
         # Raw piece delta matters, but losing pieces gives steps — so the
         # advantage of being ahead in pieces is less than it first appears.
-        score += 150 * (own_count - opp_count)
+        breakdown["material"] = self.profile["material"] * (own_count - opp_count)
+        score += breakdown["material"]
 
         # ── Speed advantage ───────────────────────────────────────────────────
         # Being the faster mover is independently valuable: more steps = more
         # capture opportunities and harder to block.
-        score += 60 * (own_steps - opp_steps)
+        breakdown["speed"] = self.profile["speed"] * (own_steps - opp_steps)
+        score += breakdown["speed"]
 
         # ── Alternate win proximity ───────────────────────────────────────────
         # Win condition 2: you have all 6, opponent has exactly 1.
         # Give a strong bonus when one capture away from that state.
         if own_count == 6 and opp_count == 2:
-            score += 800
+            breakdown["alternate"] += self.profile["alternate"]
         if own_count == 6 and opp_count == 1:
             # Should be caught by winner check, but safety net:
-            score += 9_000
+            breakdown["alternate"] += 9_000
+        score += breakdown["alternate"]
 
         # ── Threat & safety ───────────────────────────────────────────────────
         # A piece is "threatened" if any enemy can reach it within their
@@ -531,11 +743,12 @@ class MinimaxAI(AnnuvinAI):
 
         for piece in game.pieces[self.player]:
             if piece in opp_reach:
-                score -= 80   # this piece is in danger
+                breakdown["threat"] -= self.profile["threat_penalty"]   # this piece is in danger
 
         for piece in game.pieces[opp]:
             if piece in own_reach:
-                score += 50   # we are threatening this enemy piece
+                breakdown["threat"] += self.profile["threat_reward"]   # we are threatening this enemy piece
+        score += breakdown["threat"]
 
         # ── Mobility ──────────────────────────────────────────────────────────
         # Count valid one-step neighbours for all own pieces.
@@ -550,7 +763,8 @@ class MinimaxAI(AnnuvinAI):
                 nxt = (piece[0]+d[0], piece[1]+d[1], piece[2]+d[2])
                 if game.board.is_valid(nxt) and nxt not in own_set:
                     mobility += 1
-        score += 8 * mobility
+        breakdown["mobility"] = self.profile["mobility"] * mobility
+        score += breakdown["mobility"]
 
         # ── Centrality ────────────────────────────────────────────────────────
         # Central pieces have 6 neighbours; edge/corner pieces have fewer
@@ -559,7 +773,8 @@ class MinimaxAI(AnnuvinAI):
         max_dist = game.board.size - 1   # = 3 for HexHex-4
         for piece in own_set:
             dist_from_center = game.board.distance(piece, origin)
-            score += 4 * (max_dist - dist_from_center)
+            breakdown["centrality"] += self.profile["centrality"] * (max_dist - dist_from_center)
+        score += breakdown["centrality"]
 
         # ── Proximity ─────────────────────────────────────────────────────────
         # Light pull toward enemies: keeps the AI aggressive without
@@ -567,9 +782,10 @@ class MinimaxAI(AnnuvinAI):
         if opp_set:
             for piece in own_set:
                 min_dist = min(game.board.distance(piece, e) for e in opp_set)
-                score -= 3 * min_dist
+                breakdown["proximity"] += self.profile["proximity"] * min_dist
+        score += breakdown["proximity"]
 
-        return score
+        return score, breakdown
 
 
 class MCTSNode:

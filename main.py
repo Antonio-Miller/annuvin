@@ -42,9 +42,15 @@ from annuvin.constants import (
     GameMode,
 )
 from annuvin.board import HexBoard
-from annuvin.game import AnnuvinGame
+from annuvin.game import AnnuvinGame, AILogger
 from annuvin.renderer import BoardRenderer
-from annuvin.menu import MainMenu, PlayerNameScreen, SaveDialog, LoadDialog
+from annuvin.menu import (
+    MainMenu,
+    PlayerNameScreen,
+    AISkillScreen,
+    SaveDialog,
+    LoadDialog,
+)
 from annuvin.rules_screen import RulesScreen
 
 
@@ -53,6 +59,7 @@ from annuvin.rules_screen import RulesScreen
 class AppState(Enum):
     MAIN_MENU    = auto()
     PLAYER_NAMES = auto()
+    AI_SKILL     = auto()
     PLAYING      = auto()
     RULES        = auto()
     SAVE_DIALOG  = auto()
@@ -72,6 +79,8 @@ class AnnuvinApp:
         self._ai: Optional[object] = None  
         self._ai_thinking = False
         self._ai_pending_move = None
+        self._ai_logger: Optional[AILogger] = None
+        self._human_logger: Optional[AILogger] = None
 
         # Game state
         self._state: AppState       = AppState.MAIN_MENU
@@ -87,6 +96,7 @@ class AnnuvinApp:
         # Screen objects are created lazily / on demand
         self._main_menu: Optional[MainMenu]              = None
         self._player_name_screen: Optional[PlayerNameScreen] = None
+        self._ai_skill_screen: Optional[AISkillScreen]   = None
         self._rules_screen: Optional[RulesScreen]        = None
         self._save_dialog: Optional[SaveDialog]          = None
         self._load_dialog: Optional[LoadDialog]          = None
@@ -163,16 +173,32 @@ class AnnuvinApp:
         self.running = False
 
     def _go_to_ai_skill_select(self) -> None:
-        # For now, just launch with medium difficulty
-        # You can add a proper skill screen later
-        self._start_hvai_game("Player 1", "medium")
+        skill_screen = AISkillScreen(self.screen)
+        skill_screen.on_select = lambda skill: self._start_hvai_game("Player 1", skill)
+        skill_screen.on_back = self._go_to_main_menu
+        self._ai_skill_screen = skill_screen
+        self._state = AppState.AI_SKILL
 
     def _start_hvai_game(self, name1: str, skill: str) -> None:
         from annuvin.game import MinimaxAI
         self._player_names = {1: name1, 2: f"AI ({skill})"}
         self._mode = GameMode.HUMAN_VS_AI
         self._game = AnnuvinGame()
-        self._ai = MinimaxAI(player=2, skill=skill)
+        log_path = os.path.join(_HERE, "logs", "ai_thinking.log")
+        human_log_path = os.path.join(_HERE, "logs", "human_choices.log")
+        self._ai_logger = AILogger(log_path, clear=True)
+        self._human_logger = AILogger(human_log_path, clear=True)
+        self._ai_logger.log(
+            f"New AI session started: mode={self._mode}, skill={skill}, "
+            f"player1={name1}, player2=AI"
+        )
+        self._ai_logger.log(f"Initial board state:\n{self._game.to_text().rstrip()}")
+        self._human_logger.log(
+            f"New human-choice session started: mode={self._mode}, skill={skill}, "
+            f"player1={name1}, player2=AI"
+        )
+        self._human_logger.log(f"Initial board state:\n{self._game.to_text().rstrip()}")
+        self._ai = MinimaxAI(player=2, skill=skill, logger=self._ai_logger)
         self._setup_renderer()
         self._state = AppState.PLAYING
 
@@ -180,7 +206,17 @@ class AnnuvinApp:
 
     def _apply_human_move(self, move) -> None:
         if self._game and not self._game.game_over:
+            if self._human_logger is not None:
+                self._human_logger.log(
+                    f"Human player {self._game.current_player} chose move: "
+                    f"{move.origin} -> {move.destination}, caps={len(move.captures)}, "
+                    f"path={move.path}"
+                )
             self._game.apply_move(move)
+            if self._human_logger is not None:
+                self._human_logger.log(
+                    f"Board after human move:\n{self._game.to_text().rstrip()}"
+                )
             # If it's now the AI's turn, trigger it
             if (self._mode == GameMode.HUMAN_VS_AI
                     and self._ai
@@ -321,6 +357,8 @@ class AnnuvinApp:
             self._main_menu.handle_event(event)
         elif self._state == AppState.PLAYER_NAMES and self._player_name_screen:
             self._player_name_screen.handle_event(event)
+        elif self._state == AppState.AI_SKILL and self._ai_skill_screen:
+            self._ai_skill_screen.handle_event(event)
         elif self._state == AppState.RULES and self._rules_screen:
             self._rules_screen.handle_event(event)
         elif self._state == AppState.PLAYING and self._renderer:
@@ -335,6 +373,8 @@ class AnnuvinApp:
             self._main_menu.update()
         elif self._state == AppState.PLAYER_NAMES and self._player_name_screen:
             self._player_name_screen.update()
+        elif self._state == AppState.AI_SKILL and self._ai_skill_screen:
+            self._ai_skill_screen.update()
         elif self._state == AppState.RULES and self._rules_screen:
             self._rules_screen.update()
         elif self._state == AppState.PLAYING and self._renderer:

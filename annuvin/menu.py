@@ -4,6 +4,7 @@ menu.py — Main menu and in-game save/load dialogs for Annuvin.
 Screens managed here:
   • MainMenu           — title screen with mode buttons
   • PlayerNameScreen   — collect names before Human vs Human game
+    • AISkillScreen      — choose AI difficulty before Human vs AI game
   • SaveLoadDialog     — file chooser for saving / loading game state
 """
 
@@ -328,6 +329,94 @@ class PlayerNameScreen:
 
         self.btn_start.draw(self.surface)
         self.btn_back.draw(self.surface)
+
+
+# ─── AI Skill Screen ─────────────────────────────────────────────────────────
+
+class AISkillScreen:
+    """
+    Choose the AI difficulty before starting Human vs AI.
+
+    Callbacks:
+      on_select(skill: str)
+      on_back()
+    """
+
+    def __init__(self, surface: pygame.Surface) -> None:
+        self.surface = surface
+
+        pygame.font.init()
+        self.font_title = pygame.font.SysFont("segoeui", 36, bold=True)
+        self.font_sub   = pygame.font.SysFont("segoeui", 17)
+
+        bw, bh = 260, 52
+        cx = WINDOW_WIDTH // 2 - bw // 2
+
+        self.btn_easy = _Button(
+            pygame.Rect(cx, 240, bw, bh),
+            "Easy (defensive)",
+            color=(80, 100, 140),
+            hover_color=(95, 120, 170),
+        )
+        self.btn_medium = _Button(
+            pygame.Rect(cx, 306, bw, bh),
+            "Medium (balanced)",
+            color=(70, 120, 90),
+            hover_color=(90, 150, 110),
+        )
+        self.btn_hard = _Button(
+            pygame.Rect(cx, 372, bw, bh),
+            "Hard (aggressive)",
+            color=(130, 90, 70),
+            hover_color=(165, 115, 90),
+        )
+        self.btn_back = _Button(
+            pygame.Rect(cx, 452, bw, 48),
+            "← Back",
+            color=(50, 50, 80),
+            hover_color=(70, 70, 110),
+        )
+
+        self._buttons = [self.btn_easy, self.btn_medium, self.btn_hard, self.btn_back]
+
+        self.on_select: Optional[Callable[[str], None]] = None
+        self.on_back: Optional[Callable] = None
+
+    def handle_event(self, event: pygame.event.Event) -> None:
+        for btn in self._buttons:
+            btn.update_hover(event)
+
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            if self.on_back:
+                self.on_back()
+            return
+
+        if self.btn_easy.handle_event(event) and self.on_select:
+            self.on_select("easy")
+        if self.btn_medium.handle_event(event) and self.on_select:
+            self.on_select("medium")
+        if self.btn_hard.handle_event(event) and self.on_select:
+            self.on_select("hard")
+        if self.btn_back.handle_event(event) and self.on_back:
+            self.on_back()
+
+    def update(self) -> None:
+        self.surface.fill(BG_COLOR)
+
+        panel = pygame.Rect(WINDOW_WIDTH // 2 - 220, 120, 440, 420)
+        pygame.draw.rect(self.surface, PANEL_COLOR, panel, border_radius=12)
+        pygame.draw.rect(self.surface, BORDER_COLOR, panel, 2, border_radius=12)
+
+        title = self.font_title.render("Choose AI Difficulty", True, ACCENT_COLOR)
+        self.surface.blit(title, title.get_rect(center=(WINDOW_WIDTH // 2, 172)))
+
+        subtitle = self.font_sub.render(
+            "Select a level before starting Human vs AI", True, DIM_TEXT_COLOR
+        )
+        self.surface.blit(subtitle, subtitle.get_rect(center=(WINDOW_WIDTH // 2, 206)))
+
+        for btn in self._buttons:
+            btn.draw(self.surface)
 
 
 # ─── Save / Load dialog ───────────────────────────────────────────────────────
