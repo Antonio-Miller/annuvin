@@ -48,6 +48,7 @@ from annuvin.menu import (
     MainMenu,
     PlayerNameScreen,
     AISkillScreen,
+    AIVsAISkillScreen,
     SaveDialog,
     LoadDialog,
 )
@@ -60,6 +61,7 @@ class AppState(Enum):
     MAIN_MENU    = auto()
     PLAYER_NAMES = auto()
     AI_SKILL     = auto()
+    AI_VS_AI_SKILL = auto()
     PLAYING      = auto()
     RULES        = auto()
     SAVE_DIALOG  = auto()
@@ -77,6 +79,7 @@ class AnnuvinApp:
         self.clock   = pygame.time.Clock()
         self.running = True
         self._ai: Optional[object] = None  
+        self._ai_players: dict = {}
         self._ai_think_start: float = 0.0
         self._ai_think_delay: float = 0.8
         self._ai_thinking = False
@@ -99,6 +102,7 @@ class AnnuvinApp:
         self._main_menu: Optional[MainMenu]              = None
         self._player_name_screen: Optional[PlayerNameScreen] = None
         self._ai_skill_screen: Optional[AISkillScreen]   = None
+        self._aivsai_skill_screen: Optional[AIVsAISkillScreen] = None
         self._rules_screen: Optional[RulesScreen]        = None
         self._save_dialog: Optional[SaveDialog]          = None
         self._load_dialog: Optional[LoadDialog]          = None
@@ -111,6 +115,7 @@ class AnnuvinApp:
         m = MainMenu(self.screen)
         m.on_human_vs_human = self._go_to_player_names
         m.on_human_vs_ai    = self._go_to_ai_skill_select
+        m.on_ai_vs_ai       = self._go_to_aivsai_skill_select
         m.on_rules          = self._go_to_rules
         m.on_load_game      = self._go_to_load_dialog
         m.on_quit           = self._quit
@@ -124,6 +129,8 @@ class AnnuvinApp:
         self._state = AppState.PLAYER_NAMES
 
     def _go_to_main_menu(self) -> None:
+        self._ai_pending_move = None
+        self._ai_thinking = False
         self._state = AppState.MAIN_MENU
 
     def _go_to_rules(self) -> None:
@@ -141,6 +148,8 @@ class AnnuvinApp:
     def _start_hvh_game(self, name1: str, name2: str) -> None:
         self._player_names = {1: name1, 2: name2}
         self._mode = GameMode.HUMAN_VS_HUMAN
+        self._ai = None
+        self._ai_players = {}
         self._game = AnnuvinGame()
         self._setup_renderer()
         self._state = AppState.PLAYING
@@ -152,9 +161,11 @@ class AnnuvinApp:
         r.on_save_requested = self._go_to_save_dialog
         r.on_quit_requested = self._go_to_main_menu
 
-        # Only player 1 is human in HvAI mode
+        # Human control policy by mode
         if self._mode == GameMode.HUMAN_VS_AI:
             r.human_players = {1}
+        elif self._mode == GameMode.AI_VS_AI:
+            r.human_players = set()
         else:
             r.human_players = {1, 2}   # both human in HvH
 
@@ -181,10 +192,18 @@ class AnnuvinApp:
         self._ai_skill_screen = skill_screen
         self._state = AppState.AI_SKILL
 
+    def _go_to_aivsai_skill_select(self) -> None:
+        skill_screen = AIVsAISkillScreen(self.screen)
+        skill_screen.on_start = self._start_aivsai_game
+        skill_screen.on_back = self._go_to_main_menu
+        self._aivsai_skill_screen = skill_screen
+        self._state = AppState.AI_VS_AI_SKILL
+
     def _start_hvai_game(self, name1: str, skill: str) -> None:
         from annuvin.game import MinimaxAI
         self._player_names = {1: name1, 2: f"AI ({skill})"}
         self._mode = GameMode.HUMAN_VS_AI
+        self._ai_players = {}
         self._game = AnnuvinGame()
         log_path = os.path.join(_HERE, "logs", "ai_thinking.log")
         human_log_path = os.path.join(_HERE, "logs", "human_choices.log")
@@ -203,6 +222,30 @@ class AnnuvinApp:
         self._ai = MinimaxAI(player=2, skill=skill, logger=self._ai_logger)
         self._setup_renderer()
         self._state = AppState.PLAYING
+
+    def _start_aivsai_game(self, p1_skill: str, p2_skill: str) -> None:
+        from annuvin.game import MinimaxAI
+        self._player_names = {1: f"AI 1 ({p1_skill})", 2: f"AI 2 ({p2_skill})"}
+        self._mode = GameMode.AI_VS_AI
+        self._ai = None
+        self._game = AnnuvinGame()
+
+        log_path = os.path.join(_HERE, "logs", "ai_thinking.log")
+        self._ai_logger = AILogger(log_path, clear=True)
+        self._human_logger = None
+        self._ai_logger.log(
+            f"New AI vs AI session started: p1_skill={p1_skill}, p2_skill={p2_skill}"
+        )
+        self._ai_logger.log(f"Initial board state:\n{self._game.to_text().rstrip()}")
+
+        self._ai_players = {
+            1: MinimaxAI(player=1, skill=p1_skill, logger=self._ai_logger),
+            2: MinimaxAI(player=2, skill=p2_skill, logger=self._ai_logger),
+        }
+
+        self._setup_renderer()
+        self._state = AppState.PLAYING
+        self._do_ai_move()
 
     # ── Game actions ──────────────────────────────────────────────────────────
 
@@ -231,8 +274,17 @@ class AnnuvinApp:
         self._ai_think_start = time.time()
         game_snapshot = self._game.clone()
 
+        if self._mode == GameMode.AI_VS_AI:
+            ai_player = self._ai_players.get(game_snapshot.current_player)
+        else:
+            ai_player = self._ai
+
+        if ai_player is None:
+            self._ai_thinking = False
+            return
+
         def run():
-            move = self._ai.choose_move(game_snapshot)
+            move = ai_player.choose_move(game_snapshot)
             self._ai_pending_move = move
             self._ai_thinking = False
 
@@ -279,6 +331,10 @@ class AnnuvinApp:
                         }
             self._game = game
             self._mode = GameMode.HUMAN_VS_HUMAN
+            self._ai = None
+            self._ai_players = {}
+            self._ai_pending_move = None
+            self._ai_thinking = False
             self._setup_renderer()
             self._state = AppState.PLAYING
             self._show_toast(f"Loaded {os.path.basename(filepath)}", success=True)
@@ -342,11 +398,15 @@ class AnnuvinApp:
                 # Route events to the active screen
                 self._dispatch_event(event)
             
-            if (self._mode == GameMode.HUMAN_VS_AI and self._ai_pending_move is not None and not self._ai_thinking):
+            if (self._mode in (GameMode.HUMAN_VS_AI, GameMode.AI_VS_AI)
+                    and self._ai_pending_move is not None
+                    and not self._ai_thinking):
                 move = self._ai_pending_move
                 self._ai_pending_move = None
                 if self._game and not self._game.game_over:
                     self._game.apply_move(move)
+                    if (self._mode == GameMode.AI_VS_AI and not self._game.game_over):
+                        self._do_ai_move()
 
             self._draw()
             self._draw_toast()
@@ -362,6 +422,8 @@ class AnnuvinApp:
             self._player_name_screen.handle_event(event)
         elif self._state == AppState.AI_SKILL and self._ai_skill_screen:
             self._ai_skill_screen.handle_event(event)
+        elif self._state == AppState.AI_VS_AI_SKILL and self._aivsai_skill_screen:
+            self._aivsai_skill_screen.handle_event(event)
         elif self._state == AppState.RULES and self._rules_screen:
             self._rules_screen.handle_event(event)
         elif self._state == AppState.PLAYING and self._renderer:
@@ -378,6 +440,8 @@ class AnnuvinApp:
             self._player_name_screen.update()
         elif self._state == AppState.AI_SKILL and self._ai_skill_screen:
             self._ai_skill_screen.update()
+        elif self._state == AppState.AI_VS_AI_SKILL and self._aivsai_skill_screen:
+            self._aivsai_skill_screen.update()
         elif self._state == AppState.RULES and self._rules_screen:
             self._rules_screen.update()
         elif self._state == AppState.PLAYING and self._renderer:

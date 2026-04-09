@@ -5,6 +5,7 @@ Screens managed here:
   • MainMenu           — title screen with mode buttons
   • PlayerNameScreen   — collect names before Human vs Human game
     • AISkillScreen      — choose AI difficulty before Human vs AI game
+    • AIVsAISkillScreen  — choose difficulty for both AI players
   • SaveLoadDialog     — file chooser for saving / loading game state
 """
 
@@ -77,14 +78,16 @@ class MainMenu:
 
     Buttons:
       • Human vs Human    — active
-      • Human vs AI       — disabled (greyed out, "Coming soon")
-      • AI vs AI          — disabled (greyed out, "Coming soon")
+            • Human vs AI       — active
+            • AI vs AI          — active
       • Rules             — opens the rules screen
       • Load Game         — load a saved board position from file
       • Quit              — exit the application
 
     Callbacks (set by main.py):
       on_human_vs_human()
+            on_human_vs_ai()
+            on_ai_vs_ai()
       on_rules()
       on_load_game()
       on_quit()
@@ -115,8 +118,8 @@ class MainMenu:
 
         step = self._BTN_H + self._GAP
         self.btn_hvh   = mk("Human vs Human",          enabled=True,  y_offset=0 * step)
-        self.btn_hvai  = mk("Human vs AI (in development...)",  enabled=True, y_offset=1 * step)
-        self.btn_aiai  = mk("AI vs AI  (coming…)",     enabled=False, y_offset=2 * step)
+        self.btn_hvai  = mk("Human vs AI",  enabled=True, y_offset=1 * step)
+        self.btn_aiai  = mk("AI vs AI",     enabled=True, y_offset=2 * step)
         self.btn_rules = mk("Rules",                   enabled=True,  y_offset=3 * step + 12)
         self.btn_load  = mk("Load Game",               enabled=True,  y_offset=4 * step + 12)
         self.btn_quit  = mk("Quit",                    enabled=True,  y_offset=5 * step + 20,
@@ -129,6 +132,8 @@ class MainMenu:
 
         # Callbacks
         self.on_human_vs_human: Optional[Callable] = None
+        self.on_human_vs_ai:    Optional[Callable] = None
+        self.on_ai_vs_ai:       Optional[Callable] = None
         self.on_rules:          Optional[Callable] = None
         self.on_load_game:      Optional[Callable] = None
         self.on_quit:           Optional[Callable] = None
@@ -144,6 +149,8 @@ class MainMenu:
             self.on_human_vs_human()
         if self.btn_hvai.handle_event(event) and self.on_human_vs_ai:  # ← ADD THIS
             self.on_human_vs_ai()
+        if self.btn_aiai.handle_event(event) and self.on_ai_vs_ai:
+            self.on_ai_vs_ai()
         if self.btn_rules.handle_event(event) and self.on_rules:   # ← ADD BEFORE THIS
             self.on_rules()
         if self.btn_load.handle_event(event) and self.on_load_game:
@@ -195,14 +202,8 @@ class MainMenu:
                          (cx - 170, 175), (cx + 170, 175), 1)
 
     def _draw_disabled_labels(self) -> None:
-        """Small 'AI features will be available in a later phase' note."""
-        note_font = pygame.font.SysFont("segoeui", 12)
-        for btn in [self.btn_aiai]:
-            note = note_font.render(
-                "AI opponents — Phase 2", True, DIM_TEXT_COLOR)
-            nr = note.get_rect()
-            nr.midtop = (btn.rect.centerx, btn.rect.bottom + 2)
-            self.surface.blit(note, nr)
+        """Reserved for optional secondary labels under menu buttons."""
+        return
 
     def _draw_footer(self) -> None:
         footer = self.font_footer.render(
@@ -417,6 +418,107 @@ class AISkillScreen:
 
         for btn in self._buttons:
             btn.draw(self.surface)
+
+
+class AIVsAISkillScreen:
+    """Choose AI difficulty for both players before starting AI vs AI."""
+
+    def __init__(self, surface: pygame.Surface) -> None:
+        self.surface = surface
+
+        pygame.font.init()
+        self.font_title = pygame.font.SysFont("segoeui", 34, bold=True)
+        self.font_sub = pygame.font.SysFont("segoeui", 16)
+        self.font_label = pygame.font.SysFont("segoeui", 18, bold=True)
+
+        self._p1_skill = "medium"
+        self._p2_skill = "medium"
+
+        self._btns_p1 = {
+            "easy": _Button(pygame.Rect(220, 245, 130, 44), "Easy"),
+            "medium": _Button(pygame.Rect(365, 245, 130, 44), "Medium"),
+            "hard": _Button(pygame.Rect(510, 245, 130, 44), "Hard"),
+        }
+        self._btns_p2 = {
+            "easy": _Button(pygame.Rect(220, 345, 130, 44), "Easy"),
+            "medium": _Button(pygame.Rect(365, 345, 130, 44), "Medium"),
+            "hard": _Button(pygame.Rect(510, 345, 130, 44), "Hard"),
+        }
+
+        self.btn_start = _Button(
+            pygame.Rect(300, 445, 240, 50),
+            "Start AI vs AI",
+            color=(70, 120, 90),
+            hover_color=(90, 150, 110),
+        )
+        self.btn_back = _Button(
+            pygame.Rect(300, 505, 240, 46),
+            "← Back",
+            color=(50, 50, 80),
+            hover_color=(70, 70, 110),
+        )
+
+        self.on_start: Optional[Callable[[str, str], None]] = None
+        self.on_back: Optional[Callable] = None
+
+    def _button_colors(self, selected: bool) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]:
+        if selected:
+            return (140, 100, 50), (170, 125, 70)
+        return BUTTON_COLOR, BUTTON_HOVER_COLOR
+
+    def handle_event(self, event: pygame.event.Event) -> None:
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            if self.on_back:
+                self.on_back()
+            return
+
+        for skill, btn in self._btns_p1.items():
+            btn.update_hover(event)
+            if btn.handle_event(event):
+                self._p1_skill = skill
+
+        for skill, btn in self._btns_p2.items():
+            btn.update_hover(event)
+            if btn.handle_event(event):
+                self._p2_skill = skill
+
+        self.btn_start.update_hover(event)
+        self.btn_back.update_hover(event)
+        if self.btn_start.handle_event(event) and self.on_start:
+            self.on_start(self._p1_skill, self._p2_skill)
+        if self.btn_back.handle_event(event) and self.on_back:
+            self.on_back()
+
+    def update(self) -> None:
+        self.surface.fill(BG_COLOR)
+
+        panel = pygame.Rect(120, 110, 660, 470)
+        pygame.draw.rect(self.surface, PANEL_COLOR, panel, border_radius=12)
+        pygame.draw.rect(self.surface, BORDER_COLOR, panel, 2, border_radius=12)
+
+        title = self.font_title.render("AI vs AI Setup", True, ACCENT_COLOR)
+        self.surface.blit(title, title.get_rect(center=(WINDOW_WIDTH // 2, 155)))
+
+        sub = self.font_sub.render(
+            "Choose the difficulty for each AI player", True, DIM_TEXT_COLOR
+        )
+        self.surface.blit(sub, sub.get_rect(center=(WINDOW_WIDTH // 2, 186)))
+
+        p1_label = self.font_label.render("AI Player 1 (Red)", True, P1_COLOR)
+        self.surface.blit(p1_label, (220, 215))
+        p2_label = self.font_label.render("AI Player 2 (Blue)", True, P2_COLOR)
+        self.surface.blit(p2_label, (220, 315))
+
+        for skill, btn in self._btns_p1.items():
+            btn.color, btn.hover_color = self._button_colors(skill == self._p1_skill)
+            btn.draw(self.surface)
+
+        for skill, btn in self._btns_p2.items():
+            btn.color, btn.hover_color = self._button_colors(skill == self._p2_skill)
+            btn.draw(self.surface)
+
+        self.btn_start.draw(self.surface)
+        self.btn_back.draw(self.surface)
 
 
 # ─── Save / Load dialog ───────────────────────────────────────────────────────
