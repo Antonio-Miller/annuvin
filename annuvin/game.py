@@ -460,24 +460,114 @@ class MinimaxAI(AnnuvinAI):
         Positive values favour self.player, negative favour opponent.
         """
         opp = 2 if self.player == 1 else 1
+
+        # ── Terminal states ───────────────────────────────────────────────────
         if game.winner == self.player:
             return 10_000.0
         if game.winner == opp:
             return -10_000.0
         if game.winner == 0:
             return 0.0
-        
+
         own_count = game.piece_count(self.player)
         opp_count = game.piece_count(opp)
+        own_steps = game.steps_for(self.player)
+        opp_steps = game.steps_for(opp)
 
-        # Material — the only thing that really matters
-        score = 200 * (own_count - opp_count)
+        score = 0.0
 
-        # Proximity — reward being close to enemy pieces
-        for own in game.pieces[self.player]:
-            if game.pieces[opp]:
-                min_dist = min(game.board.distance(own, e) for e in game.pieces[opp])
-                score -= 5 * min_dist
+        # ── Material (dampened) ───────────────────────────────────────────────
+        # Raw piece delta matters, but losing pieces gives steps — so the
+        # advantage of being ahead in pieces is less than it first appears.
+        score += 150 * (own_count - opp_count)
+
+        # ── Speed advantage ───────────────────────────────────────────────────
+        # Being the faster mover is independently valuable: more steps = more
+        # capture opportunities and harder to block.
+        score += 60 * (own_steps - opp_steps)
+
+        # ── Alternate win proximity ───────────────────────────────────────────
+        # Win condition 2: you have all 6, opponent has exactly 1.
+        # Give a strong bonus when one capture away from that state.
+        if own_count == 6 and opp_count == 2:
+            score += 800
+        if own_count == 6 and opp_count == 1:
+            # Should be caught by winner check, but safety net:
+            score += 9_000
+
+        # ── Threat & safety ───────────────────────────────────────────────────
+        # A piece is "threatened" if any enemy can reach it within their
+        # current step budget via BFS (ignoring own-piece blocking for speed).
+        # A piece is "threatening" if it can reach any enemy within our budget.
+        def reachable_cells(from_cells, steps, own_set, opp_set):
+            """BFS: all cells reachable in `steps` hops from any cell in from_cells,
+            ignoring friendly-piece blocking (conservative / fast approximation)."""
+            from collections import deque
+            visited = set(from_cells)
+            frontier = deque((c, steps) for c in from_cells)
+            result = set()
+            while frontier:
+                cell, remaining = frontier.popleft()
+                if remaining == 0:
+                    continue
+                for d in CUBE_DIRECTIONS:
+                    nxt = (cell[0]+d[0], cell[1]+d[1], cell[2]+d[2])
+                    if not game.board.is_valid(nxt):
+                        continue
+                    result.add(nxt)
+                    if nxt not in visited:
+                        visited.add(nxt)
+                        frontier.append((nxt, remaining - 1))
+            return result
+
+        opp_reach = reachable_cells(
+            game.pieces[opp], opp_steps,
+            game.pieces[opp], game.pieces[self.player]
+        )
+        own_reach = reachable_cells(
+            game.pieces[self.player], own_steps,
+            game.pieces[self.player], game.pieces[opp]
+        )
+
+        for piece in game.pieces[self.player]:
+            if piece in opp_reach:
+                score -= 80   # this piece is in danger
+
+        for piece in game.pieces[opp]:
+            if piece in own_reach:
+                score += 50   # we are threatening this enemy piece
+
+        # ── Mobility ──────────────────────────────────────────────────────────
+        # Count valid one-step neighbours for all own pieces.
+        # Penalises being cornered or hemmed in by own pieces.
+        own_set = game.pieces[self.player]
+        opp_set = game.pieces[opp]
+        all_pieces = own_set | opp_set
+
+        mobility = 0
+        for piece in own_set:
+            for d in CUBE_DIRECTIONS:
+                nxt = (piece[0]+d[0], piece[1]+d[1], piece[2]+d[2])
+                if game.board.is_valid(nxt) and nxt not in own_set:
+                    mobility += 1
+        score += 8 * mobility
+
+        # ── Centrality ────────────────────────────────────────────────────────
+        # Central pieces have 6 neighbours; edge/corner pieces have fewer
+        # routes. Reward staying toward the center.
+        origin = (0, 0, 0)
+        max_dist = game.board.size - 1   # = 3 for HexHex-4
+        for piece in own_set:
+            dist_from_center = game.board.distance(piece, origin)
+            score += 4 * (max_dist - dist_from_center)
+
+        # ── Proximity ─────────────────────────────────────────────────────────
+        # Light pull toward enemies: keeps the AI aggressive without
+        # letting proximity dominate over material/threat signals.
+        if opp_set:
+            for piece in own_set:
+                min_dist = min(game.board.distance(piece, e) for e in opp_set)
+                score -= 3 * min_dist
 
         return score
 
