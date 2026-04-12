@@ -43,3 +43,7 @@ desktop.ini
 
 # Logs
 *.log
+logs/
+
+# Results (each person generates their own)
+results/

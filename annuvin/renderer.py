@@ -23,7 +23,7 @@ from annuvin.constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT, HEX_RADIUS,
     BG_COLOR, PANEL_COLOR, BORDER_COLOR,
     HEX_FILL, HEX_BORDER, HEX_HOVER, HEX_SELECTED,
-    HEX_VALID_MOVE, HEX_LAST_MOVE,
+    HEX_VALID_MOVE, HEX_LAST_MOVE, HEX_HINT, HEX_HINT_PATH,
     P1_COLOR, P2_COLOR, P1_COLOR_DARK, P2_COLOR_DARK,
     TEXT_COLOR, DIM_TEXT_COLOR, ACCENT_COLOR, WHITE, BLACK,
     BUTTON_COLOR, BUTTON_HOVER_COLOR, BUTTON_DISABLED, BUTTON_TEXT,
@@ -103,24 +103,23 @@ class BoardRenderer:
         self.hover_cell: Optional[Cube] = None
 
         # ── In-progress turn state ───────────────────────────────────────────
-        # _turn_origin: the cell where the selected piece started THIS turn
-        # _active_pos:  the cell where the piece currently is (updated per step)
         self._turn_origin: Optional[Cube]  = None
         self._active_pos: Optional[Cube]   = None
         self._steps_remaining: int         = 0
-        self._path_so_far: List[Cube]      = []     # steps taken so far
-        self._captures_so_far: List[Cube]  = []     # cells of captured pieces
-        self._just_captured: bool          = False  # last step was a capture?
+        self._path_so_far: List[Cube]      = []
+        self._captures_so_far: List[Cube]  = []
+        self._just_captured: bool          = False
         self._live_opp: FrozenSet[Cube]    = frozenset()
         self._next_step_cells: Set[Cube]   = set()
-        self._reachable_cells: Set[Cube]   = set()  # BFS flood for dim hints
-        self._trail_cells: Set[Cube]       = set()  # visual trail
+        self._reachable_cells: Set[Cube]   = set()
+        self._trail_cells: Set[Cube]       = set()
 
         # Fonts
         pygame.font.init()
         self.font_large  = pygame.font.SysFont("segoeui", 22, bold=True)
         self.font_medium = pygame.font.SysFont("segoeui", 18)
         self.font_small  = pygame.font.SysFont("segoeui", 14)
+        self.font_tiny   = pygame.font.SysFont("segoeui", 12)
 
         # Sidebar buttons
         sw = self.SIDEBAR_WIDTH
@@ -135,6 +134,51 @@ class BoardRenderer:
         )
         self.btn_save = Button(pygame.Rect(bx, WINDOW_HEIGHT - 118, bw, bh), "Save Game")
         self.btn_quit = Button(pygame.Rect(bx, WINDOW_HEIGHT - 62,  bw, bh), "Quit to Menu")
+
+        # ── AI vs AI controls ────────────────────────────────────────────────
+        self.is_aivsai: bool = False
+        self.aivsai_paused: bool = False
+        self.aivsai_speed_label: str = "Normal"
+        self.on_pause_toggle: Optional[callable] = None
+        self.on_speed_change: Optional[callable] = None
+        self.on_step_once: Optional[callable] = None
+
+        small_bw = (bw - 10) // 2
+        self.btn_pause = Button(
+            pygame.Rect(bx, WINDOW_HEIGHT - 310, small_bw, 34),
+            "Pause",
+            color=(100, 80, 40),
+            hover_color=(130, 105, 55),
+        )
+        self.btn_speed = Button(
+            pygame.Rect(bx + small_bw + 10, WINDOW_HEIGHT - 310, small_bw, 34),
+            "Normal",
+            color=(60, 80, 110),
+            hover_color=(80, 105, 145),
+        )
+        self.btn_step = Button(
+            pygame.Rect(bx, WINDOW_HEIGHT - 270, bw, 34),
+            "Next Move",
+            enabled=False,
+            color=(60, 100, 60),
+            hover_color=(80, 130, 80),
+        )
+
+        # ── Hint system ──────────────────────────────────────────────────────
+        self.is_human_mode: bool = False
+        self.on_hint_requested: Optional[callable] = None
+        self.hint_move: Optional[Move] = None
+        self.hint_thinking: bool = False
+
+        self.btn_hint = Button(
+            pygame.Rect(bx, WINDOW_HEIGHT - 270, bw, 34),
+            "Hint",
+            color=(140, 120, 40),
+            hover_color=(170, 150, 55),
+        )
+
+        # ── Stats ────────────────────────────────────────────────────────────
+        self.game_stats: Optional[dict] = None
 
         # Callbacks
         self.on_move_selected:  Optional[callable] = None
@@ -172,10 +216,28 @@ class BoardRenderer:
         if self.btn_stop.handle_event(event):
             self._commit_move()
 
+        # AI vs AI controls
+        if self.is_aivsai:
+            if self.btn_pause.handle_event(event) and self.on_pause_toggle:
+                self.on_pause_toggle()
+            if self.btn_speed.handle_event(event) and self.on_speed_change:
+                self.on_speed_change()
+            if self.btn_step.handle_event(event) and self.on_step_once:
+                self.on_step_once()
+
+        # Hint button
+        if self.is_human_mode and not self.is_aivsai:
+            if self.btn_hint.handle_event(event) and self.on_hint_requested:
+                self.on_hint_requested()
+
         if event.type == pygame.MOUSEMOTION:
             self.hover_cell = self._pixel_to_cell(event.pos[0], event.pos[1])
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            self._handle_cell_click(self._pixel_to_cell(event.pos[0], event.pos[1]))
+            cell = self._pixel_to_cell(event.pos[0], event.pos[1])
+            if cell is not None:
+                # Clear hint when player clicks on board
+                self.hint_move = None
+            self._handle_cell_click(cell)
 
     def update(self) -> None:
         self.surface.fill(BG_COLOR)
@@ -195,6 +257,15 @@ class BoardRenderer:
             last_cells = {self.game.last_move.origin,
                           self.game.last_move.destination}
 
+        # Hint cells
+        hint_origin: Optional[Cube] = None
+        hint_dest: Optional[Cube] = None
+        hint_path_cells: Set[Cube] = set()
+        if self.hint_move and not self.game.game_over:
+            hint_origin = self.hint_move.origin
+            hint_dest = self.hint_move.destination
+            hint_path_cells = set(self.hint_move.path)
+
         for cell in self.board.cells:
             cx, cy = self.board.cube_to_pixel(
                 cell, HEX_RADIUS, self.origin_x, self.origin_y)
@@ -205,9 +276,13 @@ class BoardRenderer:
             elif cell in self._next_step_cells:
                 fill = HEX_VALID_MOVE
             elif cell in self._reachable_cells:
-                fill = (40, 100, 55)        # dim green — reachable but not immediate
+                fill = (40, 100, 55)
             elif cell in self._trail_cells:
-                fill = (60, 80, 140)        # blue-grey trail
+                fill = (60, 80, 140)
+            elif cell == hint_origin or cell == hint_dest:
+                fill = HEX_HINT
+            elif cell in hint_path_cells:
+                fill = HEX_HINT_PATH
             elif cell in last_cells:
                 fill = HEX_LAST_MOVE
             elif cell == self.hover_cell:
@@ -222,7 +297,6 @@ class BoardRenderer:
         piece_r       = int(HEX_RADIUS * 0.45)
         piece_r_inner = int(HEX_RADIUS * 0.28)
 
-        # Enemy pieces already taken this turn — hide them immediately on capture
         captured_this_turn: set = set(self._captures_so_far)
         opp = self.game.opponent(self.game.current_player)
 
@@ -231,12 +305,9 @@ class BoardRenderer:
             (PLAYER_2, P2_COLOR, P2_COLOR_DARK),
         ]:
             for cell in self.game.pieces[player]:
-                # Hide enemy pieces captured mid-turn (game.pieces not updated yet)
                 if player == opp and cell in captured_this_turn:
                     continue
 
-                # The active piece is stored at _turn_origin in game.pieces;
-                # draw it at _active_pos (its current visual position) instead.
                 draw_cell = cell
                 if (player == self.game.current_player
                         and cell == self._turn_origin
@@ -343,14 +414,39 @@ class BoardRenderer:
                 self.font_small.render(msg, True, col),
                 (sx + 20, y))
         else:
-            self.surface.blit(
-                self.font_small.render("Click a piece to move", True, DIM_TEXT_COLOR),
-                (sx + 20, y))
+            if self.hint_thinking:
+                self.surface.blit(
+                    self.font_small.render("Computing hint...", True, (200, 180, 60)),
+                    (sx + 20, y))
+            elif self.hint_move:
+                self.surface.blit(
+                    self.font_small.render("Hint shown (gold)", True, (200, 180, 60)),
+                    (sx + 20, y))
+            else:
+                self.surface.blit(
+                    self.font_small.render("Click a piece to move", True, DIM_TEXT_COLOR),
+                    (sx + 20, y))
 
         # Update button states
-        self.btn_stop.enabled   = (self._active_pos is not None
-                                   and self._just_captured
-                                   and self._steps_remaining > 0)
+        self.btn_stop.enabled = (self._active_pos is not None
+                                 and self._just_captured
+                                 and self._steps_remaining > 0)
+
+        # Draw AI vs AI controls OR hint button
+        if self.is_aivsai and not self.game.game_over:
+            self.btn_pause.text = "Play" if self.aivsai_paused else "Pause"
+            self.btn_speed.text = self.aivsai_speed_label
+            self.btn_step.enabled = self.aivsai_paused
+            self.btn_pause.draw(self.surface, self.font_small)
+            self.btn_speed.draw(self.surface, self.font_small)
+            self.btn_step.draw(self.surface, self.font_small)
+        elif self.is_human_mode and not self.game.game_over:
+            can_hint = (self.game.current_player in self.human_players
+                        and not self.hint_thinking
+                        and self._active_pos is None)
+            self.btn_hint.enabled = can_hint
+            self.btn_hint.text = "Computing..." if self.hint_thinking else "Hint"
+            self.btn_hint.draw(self.surface, self.font_small)
 
         self.btn_stop.draw(self.surface, self.font_medium)
         self.btn_save.draw(self.surface, self.font_medium)
@@ -363,27 +459,58 @@ class BoardRenderer:
         overlay.fill((0, 0, 0, 160))
         self.surface.blit(overlay, (0, 0))
 
+        board_cx = (WINDOW_WIDTH - self.SIDEBAR_WIDTH) // 2
+
         if self.game.winner == 0:
             msg, col = "Draw!", ACCENT_COLOR
         else:
-            msg = f"Player {self.game.winner} Wins!"
+            msg = f"{self.player_names.get(self.game.winner, 'Player ' + str(self.game.winner))} Wins!"
             col = P1_COLOR if self.game.winner == PLAYER_1 else P2_COLOR
 
-        font_big = pygame.font.SysFont("segoeui", 52, bold=True)
-        font_sub = pygame.font.SysFont("segoeui", 22)
+        font_big = pygame.font.SysFont("segoeui", 44, bold=True)
+        font_sub = pygame.font.SysFont("segoeui", 18)
+        font_stat = pygame.font.SysFont("segoeui", 15)
+
         t = font_big.render(msg, True, col)
-        self.surface.blit(t, t.get_rect(
-            center=(WINDOW_WIDTH // 2 - self.SIDEBAR_WIDTH // 2,
-                    WINDOW_HEIGHT // 2 - 30)))
+        self.surface.blit(t, t.get_rect(center=(board_cx, WINDOW_HEIGHT // 2 - 100)))
+
+        # Stats display
+        if self.game_stats:
+            y_stat = WINDOW_HEIGHT // 2 - 50
+            # Header
+            hdr = font_sub.render("Game Statistics", True, ACCENT_COLOR)
+            self.surface.blit(hdr, hdr.get_rect(center=(board_cx, y_stat)))
+            y_stat += 30
+
+            for p in [1, 2]:
+                p_col = P1_COLOR if p == PLAYER_1 else P2_COLOR
+                s = self.game_stats[p]
+                name = self.player_names.get(p, f"Player {p}")
+                avg_t = s["total_time"] / s["moves"] if s["moves"] > 0 else 0.0
+
+                name_surf = font_stat.render(f"{name}", True, p_col)
+                self.surface.blit(name_surf, name_surf.get_rect(center=(board_cx, y_stat)))
+                y_stat += 20
+
+                stats_line = (f"Moves: {s['moves']}  |  Captures: {s['captures']}  |  "
+                              f"Avg time: {avg_t:.2f}s  |  Pieces: {self.game.piece_count(p)}")
+                stat_surf = font_stat.render(stats_line, True, WHITE)
+                self.surface.blit(stat_surf, stat_surf.get_rect(center=(board_cx, y_stat)))
+                y_stat += 28
+
+            total_line = f"Total moves: {self.game.move_count}"
+            total_surf = font_stat.render(total_line, True, DIM_TEXT_COLOR)
+            self.surface.blit(total_surf, total_surf.get_rect(center=(board_cx, y_stat)))
+            y_stat += 30
+        else:
+            y_stat = WINDOW_HEIGHT // 2 + 10
+
         s = font_sub.render("Press ENTER to return to menu", True, WHITE)
-        self.surface.blit(s, s.get_rect(
-            center=(WINDOW_WIDTH // 2 - self.SIDEBAR_WIDTH // 2,
-                    WINDOW_HEIGHT // 2 + 30)))
+        self.surface.blit(s, s.get_rect(center=(board_cx, y_stat)))
 
     # ── Turn management ───────────────────────────────────────────────────────
 
     def _reset_turn(self) -> None:
-        """Abandon in-progress turn, return to piece-selection state."""
         self._turn_origin     = None
         self._active_pos      = None
         self._steps_remaining = 0
@@ -396,7 +523,6 @@ class BoardRenderer:
         self._trail_cells     = set()
 
     def _start_turn(self, piece: Cube) -> None:
-        """Begin a new turn for *piece*."""
         player = self.game.current_player
         self._turn_origin     = piece
         self._active_pos      = piece
@@ -411,7 +537,6 @@ class BoardRenderer:
         self._refresh_reachable()
 
     def _refresh_next_steps(self) -> None:
-        """Compute the set of cells the active piece can step to in ONE step."""
         if self._active_pos is None:
             self._next_step_cells = set()
             return
@@ -425,10 +550,6 @@ class BoardRenderer:
             nxt = _cube_add(current, d)
             if not self.board.is_valid(nxt):
                 continue
-            # Cannot enter a cell occupied by an own piece
-            # (the piece that is currently moving started at _turn_origin;
-            #  its spot in game.pieces is still the origin, so exclude it only
-            #  if it's a *different* own piece)
             if nxt in own and nxt != self._turn_origin:
                 continue
             result.add(nxt)
@@ -436,7 +557,6 @@ class BoardRenderer:
         self._next_step_cells = result
 
     def _refresh_reachable(self) -> None:
-        """BFS flood-fill up to _steps_remaining hops — shown as dim green hints."""
         if self._active_pos is None or self._steps_remaining == 0:
             self._reachable_cells = set()
             return
@@ -462,11 +582,9 @@ class BoardRenderer:
                     visited.add(nxt)
                     queue.append((nxt, remaining - 1))
 
-        # Remove the immediate next-step cells — they already have their own highlight
         self._reachable_cells = result - self._next_step_cells
 
     def _take_step(self, dest: Cube) -> None:
-        """Advance the active piece one step to *dest*."""
         is_capture = dest in self._live_opp
 
         self._path_so_far.append(dest)
@@ -481,21 +599,17 @@ class BoardRenderer:
         else:
             self._just_captured = False
 
-        # Auto-commit: no steps left
         if self._steps_remaining == 0:
             self._commit_move()
             return
 
-        # Refresh valid next-step cells and reachable area
         self._refresh_next_steps()
         self._refresh_reachable()
 
-        # Auto-commit: completely blocked with steps remaining (forced stop)
         if not self._next_step_cells:
             self._commit_move()
 
     def _commit_move(self) -> None:
-        """Apply the accumulated path as a Move to the game."""
         if not self._path_so_far:
             self._reset_turn()
             return
@@ -514,76 +628,57 @@ class BoardRenderer:
     def _handle_cell_click(self, clicked: Optional[Cube]) -> None:
         if clicked is None:
             return
-        
-        # Block input if current player is not human
+
         if self.game.current_player not in self.human_players:
             return
 
         player = self.game.current_player
 
-        # ── No piece in progress: select a piece ─────────────────────────────
         if self._active_pos is None:
             if clicked in self.game.pieces[player]:
                 self._start_turn(clicked)
             return
 
-        # ── Turn in progress ─────────────────────────────────────────────────
-
-        # Clicking the active piece's current cell:
-        #   - If no steps taken yet → deselect (cancel before first step)
-        #   - If steps taken → ignore (can't go back)
         if clicked == self._active_pos:
             if not self._path_so_far:
                 self._reset_turn()
             return
 
-        # Clicking a different OWN piece → cancel and start fresh with it
         if clicked in self.game.pieces[player] and clicked != self._turn_origin:
             self._reset_turn()
             self._start_turn(clicked)
             return
 
-        # Clicking a valid next-step destination → take the step
         if clicked in self._next_step_cells:
             self._take_step(clicked)
             return
-        
+
     def _draw_thinking_indicator(self) -> None:
-        """Pulsing 'AI is thinking' banner across the board area."""
-        import time
-
         board_area_w = WINDOW_WIDTH - self.SIDEBAR_WIDTH
-        pulse = (math.sin(time.time() * 3) + 1) / 2   # 0.0 → 1.0, ~3Hz
+        pulse = (math.sin(time.time() * 3) + 1) / 2
 
-        # Semi-transparent overlay on board area only
         overlay = pygame.Surface((board_area_w, WINDOW_HEIGHT), pygame.SRCALPHA)
         alpha = int(30 + 20 * pulse)
         overlay.fill((20, 20, 60, alpha))
         self.surface.blit(overlay, (0, 0))
 
-        # Banner bar
         bar_h = 52
         bar_y = WINDOW_HEIGHT // 2 - bar_h // 2
-        bar_rect = pygame.Rect(0, bar_y, board_area_w, bar_h)
         bar_alpha = int(200 + 40 * pulse)
         bar_surf = pygame.Surface((board_area_w, bar_h), pygame.SRCALPHA)
         bar_surf.fill((28, 28, 60, bar_alpha))
         self.surface.blit(bar_surf, (0, bar_y))
 
-        # Animated dots  "Thinking ● ● ●"
-        dot_count = int(time.time() * 2) % 4   # cycles 0-3
+        dot_count = int(time.time() * 2) % 4
         dots = " ●" * dot_count
         font = pygame.font.SysFont("segoeui", 22, bold=True)
         label = font.render(f"AI is thinking{dots}", True, (180, 200, 255))
         self.surface.blit(label, label.get_rect(
             center=(board_area_w // 2, bar_y + bar_h // 2)))
 
-        # Thin pulsing border lines on the bar
         line_alpha = int(100 + 100 * pulse)
         line_col = (80, 100, 200, line_alpha)
         for ly in (bar_y, bar_y + bar_h - 1):
             line_surf = pygame.Surface((board_area_w, 2), pygame.SRCALPHA)
             line_surf.fill(line_col)
             self.surface.blit(line_surf, (0, ly))
-
-        # Anything else → ignore

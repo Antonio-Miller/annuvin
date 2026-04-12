@@ -25,6 +25,8 @@ HEX_HOVER       = ( 70,  90, 130)
 HEX_SELECTED    = ( 50, 130, 200)
 HEX_VALID_MOVE  = ( 50, 180,  80)
 HEX_LAST_MOVE   = ( 90,  70, 160)
+HEX_HINT        = (200, 180,  60)
+HEX_HINT_PATH   = (140, 130,  50)
 
 # Players
 P1_COLOR        = (220,  80,  80)   # red

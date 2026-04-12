@@ -373,7 +373,7 @@ class AISkillScreen:
         )
         self.btn_back = _Button(
             pygame.Rect(cx, 452, bw, 48),
-            "← Back",
+            "Back",
             color=(50, 50, 80),
             hover_color=(70, 70, 110),
         )
@@ -453,7 +453,7 @@ class AIVsAISkillScreen:
         )
         self.btn_back = _Button(
             pygame.Rect(300, 505, 240, 46),
-            "← Back",
+            "Back",
             color=(50, 50, 80),
             hover_color=(70, 70, 110),
         )
