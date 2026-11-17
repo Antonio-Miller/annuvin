@@ -2,7 +2,7 @@
 
 A digital version of the abstract strategy game **Annuvin**, with a **Minimax AI opponent with alpha-beta pruning**, three difficulty levels and an interactive Pygame interface.
 
-Built by a team of 3 for the Artificial Intelligence course (L.EIC, FEUP, 2025/26), Assignment 1: Adversarial Search Methods for Two-Player Board Games. Final grade: **16/20**.
+Built by a team of 3 for the Artificial Intelligence course (L.EIC, FEUP, 2025/26), Assignment 1: Adversarial Search Methods for Two-Player Board Games. Final grade: **15.8/20**.
 
 <p align="center">
   <img src="docs/screenshots/menu.png" width="32%" alt="Main menu">
