@@ -1,8 +1,33 @@
-# Annuvin — Adversarial Search for Two-Player Board Games
+# Annuvin: AI for a Two-Player Board Game
 
-**Course:** Artificial Intelligence (IArt) 2025/26  
-**Assignment 1:** Adversarial Search Methods for Two-Player Board Games  
-**Group:** 74
+A digital version of the abstract strategy game **Annuvin**, with a **Minimax AI opponent with alpha-beta pruning**, three difficulty levels and an interactive Pygame interface.
+
+Built by a team of 3 for the Artificial Intelligence course (L.EIC, FEUP, 2025/26), Assignment 1: Adversarial Search Methods for Two-Player Board Games. Final grade: **16/20**.
+
+<p align="center">
+  <img src="docs/screenshots/menu.png" width="32%" alt="Main menu">
+  <img src="docs/screenshots/gameplay.png" width="32%" alt="AI vs AI game in progress">
+  <img src="docs/screenshots/game-over.png" width="32%" alt="End of game with statistics">
+</p>
+
+## Highlights
+
+- **Minimax with alpha-beta pruning** and an evaluation function built from 7 heuristics
+- **3 difficulty levels** (easy, medium, hard) that change search depth, move limits and time limits
+- **Human vs Human, Human vs AI and AI vs AI** modes
+- **Hint system**: the AI suggests the best move to human players
+- **Benchmark tool** that plays AI-vs-AI matches headlessly and compares the difficulty levels
+
+## My contribution
+
+- Worked on the **Minimax AI** with the team
+- Built the **hint system**, which computes the best move in the background and highlights it on the board
+- Built the **AI vs AI controls** (pause, speed and step-through)
+- Wrote the **benchmark tool** (`benchmark.py`) and the project README
+
+## Team
+
+António Miller, Guilherme Linhares, José Reis
 
 ---
 
@@ -128,7 +153,7 @@ The `benchmark.py` script runs headless games between AI players and exports det
 ## Project Structure
 
 ```
-assignment 1/
+annuvin/
 ├── main.py              # Application entry point (GUI)
 ├── benchmark.py         # AI performance comparison (headless)
 ├── requirements.txt     # Python dependencies
